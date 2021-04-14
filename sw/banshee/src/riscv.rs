@@ -16,8 +16,12 @@ pub enum Format {
     Imm12Rd(FormatImm12Rd),
     Imm12RdRmRs1(FormatImm12RdRmRs1),
     Imm12RdRs1(FormatImm12RdRs1),
+    Imm12Rs1(FormatImm12Rs1),
+    Imm12Rs1StaggerMaskStaggerMax(FormatImm12Rs1StaggerMaskStaggerMax),
     Imm12hiImm12loRs1Rs2(FormatImm12hiImm12loRs1Rs2),
     Imm20Rd(FormatImm20Rd),
+    Imm5Rd(FormatImm5Rd),
+    Imm5RdRs1(FormatImm5RdRs1),
     Jimm20Rd(FormatJimm20Rd),
     RdRmRs1(FormatRdRmRs1),
     RdRmRs1Rs2(FormatRdRmRs1Rs2),
@@ -28,6 +32,7 @@ pub enum Format {
     RdRs1Rs3Shamt(FormatRdRs1Rs3Shamt),
     RdRs1Shamt(FormatRdRs1Shamt),
     RdRs1Shamtw(FormatRdRs1Shamtw),
+    RdRs2(FormatRdRs2),
     Rs1(FormatRs1),
     Rs1Rs2(FormatRs1Rs2),
 }
@@ -44,8 +49,12 @@ impl Format {
             Self::Imm12Rd(x) => x.raw,
             Self::Imm12RdRmRs1(x) => x.raw,
             Self::Imm12RdRs1(x) => x.raw,
+            Self::Imm12Rs1(x) => x.raw,
+            Self::Imm12Rs1StaggerMaskStaggerMax(x) => x.raw,
             Self::Imm12hiImm12loRs1Rs2(x) => x.raw,
             Self::Imm20Rd(x) => x.raw,
+            Self::Imm5Rd(x) => x.raw,
+            Self::Imm5RdRs1(x) => x.raw,
             Self::Jimm20Rd(x) => x.raw,
             Self::RdRmRs1(x) => x.raw,
             Self::RdRmRs1Rs2(x) => x.raw,
@@ -56,6 +65,7 @@ impl Format {
             Self::RdRs1Rs3Shamt(x) => x.raw,
             Self::RdRs1Shamt(x) => x.raw,
             Self::RdRs1Shamtw(x) => x.raw,
+            Self::RdRs2(x) => x.raw,
             Self::Rs1(x) => x.raw,
             Self::Rs1Rs2(x) => x.raw,
         }
@@ -74,8 +84,12 @@ impl std::fmt::Display for Format {
             Self::Imm12Rd(x) => write!(f, "{}", x),
             Self::Imm12RdRmRs1(x) => write!(f, "{}", x),
             Self::Imm12RdRs1(x) => write!(f, "{}", x),
+            Self::Imm12Rs1(x) => write!(f, "{}", x),
+            Self::Imm12Rs1StaggerMaskStaggerMax(x) => write!(f, "{}", x),
             Self::Imm12hiImm12loRs1Rs2(x) => write!(f, "{}", x),
             Self::Imm20Rd(x) => write!(f, "{}", x),
+            Self::Imm5Rd(x) => write!(f, "{}", x),
+            Self::Imm5RdRs1(x) => write!(f, "{}", x),
             Self::Jimm20Rd(x) => write!(f, "{}", x),
             Self::RdRmRs1(x) => write!(f, "{}", x),
             Self::RdRmRs1Rs2(x) => write!(f, "{}", x),
@@ -86,6 +100,7 @@ impl std::fmt::Display for Format {
             Self::RdRs1Rs3Shamt(x) => write!(f, "{}", x),
             Self::RdRs1Shamt(x) => write!(f, "{}", x),
             Self::RdRs1Shamtw(x) => write!(f, "{}", x),
+            Self::RdRs2(x) => write!(f, "{}", x),
             Self::Rs1(x) => write!(f, "{}", x),
             Self::Rs1Rs2(x) => write!(f, "{}", x),
         }
@@ -363,8 +378,7 @@ impl FormatImm12Rd {
 /// Opcodes with the `Imm12Rd` instruction format.
 #[derive(Debug, Copy, Clone)]
 pub enum OpcodeImm12Rd {
-    DmStati,
-    DmErri,
+    Scfgri,
 }
 
 impl std::fmt::Display for FormatImm12Rd {
@@ -379,8 +393,7 @@ impl std::fmt::Display for FormatImm12Rd {
 impl std::fmt::Display for OpcodeImm12Rd {
     fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
         match self {
-            Self::DmStati => write!(f, "dm.stati"),
-            Self::DmErri => write!(f, "dm.erri"),
+            Self::Scfgri => write!(f, "scfgri"),
         }
     }
 }
@@ -405,7 +418,6 @@ impl FormatImm12RdRmRs1 {
 /// Opcodes with the `Imm12RdRmRs1` instruction format.
 #[derive(Debug, Copy, Clone)]
 pub enum OpcodeImm12RdRmRs1 {
-    Frep,
     Irep,
 }
 
@@ -423,7 +435,6 @@ impl std::fmt::Display for FormatImm12RdRmRs1 {
 impl std::fmt::Display for OpcodeImm12RdRmRs1 {
     fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
         match self {
-            Self::Frep => write!(f, "frep"),
             Self::Irep => write!(f, "irep"),
         }
     }
@@ -473,7 +484,6 @@ pub enum OpcodeImm12RdRs1 {
     Flw,
     Fld,
     Flq,
-    DmStrti,
 }
 
 impl std::fmt::Display for FormatImm12RdRs1 {
@@ -514,7 +524,88 @@ impl std::fmt::Display for OpcodeImm12RdRs1 {
             Self::Flw => write!(f, "flw"),
             Self::Fld => write!(f, "fld"),
             Self::Flq => write!(f, "flq"),
-            Self::DmStrti => write!(f, "dm.strti"),
+        }
+    }
+}
+
+/// The `Imm12Rs1` instruction format.
+#[derive(Debug, Copy, Clone)]
+pub struct FormatImm12Rs1 {
+    pub op: OpcodeImm12Rs1,
+    pub raw: u32,
+    pub imm12: u32,
+    pub rs1: u32,
+}
+
+impl FormatImm12Rs1 {
+    pub fn imm(&self) -> i32 {
+        ((self.imm12 << 20) as i32) >> 20
+    }
+}
+
+/// Opcodes with the `Imm12Rs1` instruction format.
+#[derive(Debug, Copy, Clone)]
+pub enum OpcodeImm12Rs1 {
+    Scfgwi,
+}
+
+impl std::fmt::Display for FormatImm12Rs1 {
+    fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+        write!(f, "{}", self.op)?;
+        write!(f, " imm12={:x}", self.imm12)?;
+        write!(f, " rs1={:x}", self.rs1)?;
+        Ok(())
+    }
+}
+
+impl std::fmt::Display for OpcodeImm12Rs1 {
+    fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+        match self {
+            Self::Scfgwi => write!(f, "scfgwi"),
+        }
+    }
+}
+
+/// The `Imm12Rs1StaggerMaskStaggerMax` instruction format.
+#[derive(Debug, Copy, Clone)]
+pub struct FormatImm12Rs1StaggerMaskStaggerMax {
+    pub op: OpcodeImm12Rs1StaggerMaskStaggerMax,
+    pub raw: u32,
+    pub imm12: u32,
+    pub rs1: u32,
+    pub stagger_mask: u32,
+    pub stagger_max: u32,
+}
+
+impl FormatImm12Rs1StaggerMaskStaggerMax {
+    pub fn imm(&self) -> i32 {
+        ((self.imm12 << 20) as i32) >> 20
+    }
+}
+
+/// Opcodes with the `Imm12Rs1StaggerMaskStaggerMax` instruction format.
+#[derive(Debug, Copy, Clone)]
+pub enum OpcodeImm12Rs1StaggerMaskStaggerMax {
+    FrepO,
+    FrepI,
+}
+
+impl std::fmt::Display for FormatImm12Rs1StaggerMaskStaggerMax {
+    fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+        write!(f, "{}", self.op)?;
+        write!(f, " imm12={:x}", self.imm12)?;
+        write!(f, " rs1={:x}", self.rs1)?;
+        write!(f, " stagger_mask={:x}", self.stagger_mask)?;
+        write!(f, " stagger_max={:x}", self.stagger_max)?;
+        Ok(())
+    }
+}
+
+impl std::fmt::Display for OpcodeImm12Rs1StaggerMaskStaggerMax {
+    fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+        match self {
+            Self::FrepO => write!(f, "frep.o"),
+            Self::FrepI => write!(f, "frep.i"),
         }
     }
 }
@@ -606,6 +697,76 @@ impl std::fmt::Display for OpcodeImm20Rd {
         match self {
             Self::Lui => write!(f, "lui"),
             Self::Auipc => write!(f, "auipc"),
+        }
+    }
+}
+
+/// The `Imm5Rd` instruction format.
+#[derive(Debug, Copy, Clone)]
+pub struct FormatImm5Rd {
+    pub op: OpcodeImm5Rd,
+    pub raw: u32,
+    pub imm5: u32,
+    pub rd: u32,
+}
+
+impl FormatImm5Rd {}
+
+/// Opcodes with the `Imm5Rd` instruction format.
+#[derive(Debug, Copy, Clone)]
+pub enum OpcodeImm5Rd {
+    Dmstati,
+}
+
+impl std::fmt::Display for FormatImm5Rd {
+    fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+        write!(f, "{}", self.op)?;
+        write!(f, " imm5={:x}", self.imm5)?;
+        write!(f, " rd={:x}", self.rd)?;
+        Ok(())
+    }
+}
+
+impl std::fmt::Display for OpcodeImm5Rd {
+    fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+        match self {
+            Self::Dmstati => write!(f, "dmstati"),
+        }
+    }
+}
+
+/// The `Imm5RdRs1` instruction format.
+#[derive(Debug, Copy, Clone)]
+pub struct FormatImm5RdRs1 {
+    pub op: OpcodeImm5RdRs1,
+    pub raw: u32,
+    pub imm5: u32,
+    pub rd: u32,
+    pub rs1: u32,
+}
+
+impl FormatImm5RdRs1 {}
+
+/// Opcodes with the `Imm5RdRs1` instruction format.
+#[derive(Debug, Copy, Clone)]
+pub enum OpcodeImm5RdRs1 {
+    Dmcpyi,
+}
+
+impl std::fmt::Display for FormatImm5RdRs1 {
+    fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+        write!(f, "{}", self.op)?;
+        write!(f, " imm5={:x}", self.imm5)?;
+        write!(f, " rd={:x}", self.rd)?;
+        write!(f, " rs1={:x}", self.rs1)?;
+        Ok(())
+    }
+}
+
+impl std::fmt::Display for OpcodeImm5RdRs1 {
+    fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+        match self {
+            Self::Dmcpyi => write!(f, "dmcpyi"),
         }
     }
 }
@@ -909,8 +1070,6 @@ pub enum OpcodeRdRs1 {
     FmvWX,
     FmvDX,
     FmvQX,
-    DmStat,
-    DmErr,
 }
 
 impl std::fmt::Display for FormatRdRs1 {
@@ -945,8 +1104,6 @@ impl std::fmt::Display for OpcodeRdRs1 {
             Self::FmvWX => write!(f, "fmv.w.x"),
             Self::FmvDX => write!(f, "fmv.d.x"),
             Self::FmvQX => write!(f, "fmv.q.x"),
-            Self::DmStat => write!(f, "dm.stat"),
-            Self::DmErr => write!(f, "dm.err"),
         }
     }
 }
@@ -1049,7 +1206,7 @@ pub enum OpcodeRdRs1Rs2 {
     FleQ,
     FltQ,
     FeqQ,
-    DmStrt,
+    Dmcpy,
 }
 
 impl std::fmt::Display for FormatRdRs1Rs2 {
@@ -1148,7 +1305,7 @@ impl std::fmt::Display for OpcodeRdRs1Rs2 {
             Self::FleQ => write!(f, "fle.q"),
             Self::FltQ => write!(f, "flt.q"),
             Self::FeqQ => write!(f, "feq.q"),
-            Self::DmStrt => write!(f, "dm.strt"),
+            Self::Dmcpy => write!(f, "dmcpy"),
         }
     }
 }
@@ -1337,6 +1494,42 @@ impl std::fmt::Display for OpcodeRdRs1Shamtw {
     }
 }
 
+/// The `RdRs2` instruction format.
+#[derive(Debug, Copy, Clone)]
+pub struct FormatRdRs2 {
+    pub op: OpcodeRdRs2,
+    pub raw: u32,
+    pub rd: u32,
+    pub rs2: u32,
+}
+
+impl FormatRdRs2 {}
+
+/// Opcodes with the `RdRs2` instruction format.
+#[derive(Debug, Copy, Clone)]
+pub enum OpcodeRdRs2 {
+    Dmstat,
+    Scfgr,
+}
+
+impl std::fmt::Display for FormatRdRs2 {
+    fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+        write!(f, "{}", self.op)?;
+        write!(f, " rd={:x}", self.rd)?;
+        write!(f, " rs2={:x}", self.rs2)?;
+        Ok(())
+    }
+}
+
+impl std::fmt::Display for OpcodeRdRs2 {
+    fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+        match self {
+            Self::Dmstat => write!(f, "dmstat"),
+            Self::Scfgr => write!(f, "scfgr"),
+        }
+    }
+}
+
 /// The `Rs1` instruction format.
 #[derive(Debug, Copy, Clone)]
 pub struct FormatRs1 {
@@ -1350,7 +1543,7 @@ impl FormatRs1 {}
 /// Opcodes with the `Rs1` instruction format.
 #[derive(Debug, Copy, Clone)]
 pub enum OpcodeRs1 {
-    DmTwodReps,
+    Dmrep,
 }
 
 impl std::fmt::Display for FormatRs1 {
@@ -1364,7 +1557,7 @@ impl std::fmt::Display for FormatRs1 {
 impl std::fmt::Display for OpcodeRs1 {
     fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
         match self {
-            Self::DmTwodReps => write!(f, "dm.twod.reps"),
+            Self::Dmrep => write!(f, "dmrep"),
         }
     }
 }
@@ -1386,9 +1579,10 @@ pub enum OpcodeRs1Rs2 {
     SfenceVma,
     HfenceBvma,
     HfenceGvma,
-    DmSrc,
-    DmDst,
-    DmTwodStrd,
+    Dmsrc,
+    Dmdst,
+    Dmstr,
+    Scfgw,
 }
 
 impl std::fmt::Display for FormatRs1Rs2 {
@@ -1406,9 +1600,10 @@ impl std::fmt::Display for OpcodeRs1Rs2 {
             Self::SfenceVma => write!(f, "sfence.vma"),
             Self::HfenceBvma => write!(f, "hfence.bvma"),
             Self::HfenceGvma => write!(f, "hfence.gvma"),
-            Self::DmSrc => write!(f, "dm.src"),
-            Self::DmDst => write!(f, "dm.dst"),
-            Self::DmTwodStrd => write!(f, "dm.twod.strd"),
+            Self::Dmsrc => write!(f, "dmsrc"),
+            Self::Dmdst => write!(f, "dmdst"),
+            Self::Dmstr => write!(f, "dmstr"),
+            Self::Scfgw => write!(f, "scfgw"),
         }
     }
 }
@@ -1419,8 +1614,22 @@ pub fn parse_u32(raw: u32) -> Format {
         0x6f => return parse_jimm20_rd(OpcodeJimm20Rd::Jal, raw),
         0x37 => return parse_imm20_rd(OpcodeImm20Rd::Lui, raw),
         0x17 => return parse_imm20_rd(OpcodeImm20Rd::Auipc, raw),
-        0xb => return parse_imm12_rd_rm_rs1(OpcodeImm12RdRmRs1::Frep, raw),
         0x3f => return parse_imm12_rd_rm_rs1(OpcodeImm12RdRmRs1::Irep, raw),
+        _ => (),
+    }
+    match raw & 0xff {
+        0x8b => {
+            return parse_imm12_rs1_stagger_mask_stagger_max(
+                OpcodeImm12Rs1StaggerMaskStaggerMax::FrepO,
+                raw,
+            )
+        }
+        0xb => {
+            return parse_imm12_rs1_stagger_mask_stagger_max(
+                OpcodeImm12Rs1StaggerMaskStaggerMax::FrepI,
+                raw,
+            )
+        }
         _ => (),
     }
     match raw & 0x707f {
@@ -1463,12 +1672,14 @@ pub fn parse_u32(raw: u32) -> Format {
         0x2027 => return parse_imm12hi_imm12lo_rs1_rs2(OpcodeImm12hiImm12loRs1Rs2::Fsw, raw),
         0x3027 => return parse_imm12hi_imm12lo_rs1_rs2(OpcodeImm12hiImm12loRs1Rs2::Fsd, raw),
         0x4027 => return parse_imm12hi_imm12lo_rs1_rs2(OpcodeImm12hiImm12loRs1Rs2::Fsq, raw),
-        0x102b => return parse_imm12_rd_rs1(OpcodeImm12RdRs1::DmStrti, raw),
+        _ => (),
+    }
+    match raw & 0x7fff {
+        0x202b => return parse_imm12_rs1(OpcodeImm12Rs1::Scfgwi, raw),
         _ => (),
     }
     match raw & 0xff07f {
-        0x202b => return parse_imm12_rd(OpcodeImm12Rd::DmStati, raw),
-        0x302b => return parse_imm12_rd(OpcodeImm12Rd::DmErri, raw),
+        0x102b => return parse_imm12_rd(OpcodeImm12Rd::Scfgri, raw),
         _ => (),
     }
     match raw & 0x400707f {
@@ -1644,16 +1855,24 @@ pub fn parse_u32(raw: u32) -> Format {
         0xa6000053 => return parse_rd_rs1_rs2(OpcodeRdRs1Rs2::FleQ, raw),
         0xa6001053 => return parse_rd_rs1_rs2(OpcodeRdRs1Rs2::FltQ, raw),
         0xa6002053 => return parse_rd_rs1_rs2(OpcodeRdRs1Rs2::FeqQ, raw),
-        0x400002b => return parse_rd_rs1_rs2(OpcodeRdRs1Rs2::DmStrt, raw),
+        0x400002b => return parse_imm5_rd_rs1(OpcodeImm5RdRs1::Dmcpyi, raw),
+        0x600002b => return parse_rd_rs1_rs2(OpcodeRdRs1Rs2::Dmcpy, raw),
         _ => (),
     }
     match raw & 0xfe007fff {
         0x12000073 => return parse_rs1_rs2(OpcodeRs1Rs2::SfenceVma, raw),
         0x22000073 => return parse_rs1_rs2(OpcodeRs1Rs2::HfenceBvma, raw),
         0xa2000073 => return parse_rs1_rs2(OpcodeRs1Rs2::HfenceGvma, raw),
-        0x2b => return parse_rs1_rs2(OpcodeRs1Rs2::DmSrc, raw),
-        0x200002b => return parse_rs1_rs2(OpcodeRs1Rs2::DmDst, raw),
-        0xa00002b => return parse_rs1_rs2(OpcodeRs1Rs2::DmTwodStrd, raw),
+        0x2b => return parse_rs1_rs2(OpcodeRs1Rs2::Dmsrc, raw),
+        0x200002b => return parse_rs1_rs2(OpcodeRs1Rs2::Dmdst, raw),
+        0xc00002b => return parse_rs1_rs2(OpcodeRs1Rs2::Dmstr, raw),
+        0x20ab => return parse_rs1_rs2(OpcodeRs1Rs2::Scfgw, raw),
+        _ => (),
+    }
+    match raw & 0xfe0ff07f {
+        0x800002b => return parse_imm5_rd(OpcodeImm5Rd::Dmstati, raw),
+        0xa00002b => return parse_rd_rs2(OpcodeRdRs2::Dmstat, raw),
+        0x902b => return parse_rd_rs2(OpcodeRdRs2::Scfgr, raw),
         _ => (),
     }
     match raw & 0xfff0007f {
@@ -1713,12 +1932,10 @@ pub fn parse_u32(raw: u32) -> Format {
         0xf0000053 => return parse_rd_rs1(OpcodeRdRs1::FmvWX, raw),
         0xf2000053 => return parse_rd_rs1(OpcodeRdRs1::FmvDX, raw),
         0xf6000053 => return parse_rd_rs1(OpcodeRdRs1::FmvQX, raw),
-        0x600002b => return parse_rd_rs1(OpcodeRdRs1::DmStat, raw),
-        0x800002b => return parse_rd_rs1(OpcodeRdRs1::DmErr, raw),
         _ => (),
     }
     match raw & 0xfff07fff {
-        0xc00002b => return parse_rs1(OpcodeRs1::DmTwodReps, raw),
+        0xe00002b => return parse_rs1(OpcodeRs1::Dmrep, raw),
         _ => (),
     }
     match raw & 0xffffffff {
@@ -1828,6 +2045,31 @@ pub fn parse_imm12_rd_rs1(op: OpcodeImm12RdRs1, raw: u32) -> Format {
     })
 }
 
+/// Parse an instruction with the `Imm12Rs1` format.
+pub fn parse_imm12_rs1(op: OpcodeImm12Rs1, raw: u32) -> Format {
+    Format::Imm12Rs1(FormatImm12Rs1 {
+        op,
+        raw,
+        imm12: (raw >> 20) & 0xfff,
+        rs1: (raw >> 15) & 0x1f,
+    })
+}
+
+/// Parse an instruction with the `Imm12Rs1StaggerMaskStaggerMax` format.
+pub fn parse_imm12_rs1_stagger_mask_stagger_max(
+    op: OpcodeImm12Rs1StaggerMaskStaggerMax,
+    raw: u32,
+) -> Format {
+    Format::Imm12Rs1StaggerMaskStaggerMax(FormatImm12Rs1StaggerMaskStaggerMax {
+        op,
+        raw,
+        imm12: (raw >> 20) & 0xfff,
+        rs1: (raw >> 15) & 0x1f,
+        stagger_mask: (raw >> 8) & 0xf,
+        stagger_max: (raw >> 12) & 0x7,
+    })
+}
+
 /// Parse an instruction with the `Imm12hiImm12loRs1Rs2` format.
 pub fn parse_imm12hi_imm12lo_rs1_rs2(op: OpcodeImm12hiImm12loRs1Rs2, raw: u32) -> Format {
     Format::Imm12hiImm12loRs1Rs2(FormatImm12hiImm12loRs1Rs2 {
@@ -1847,6 +2089,27 @@ pub fn parse_imm20_rd(op: OpcodeImm20Rd, raw: u32) -> Format {
         raw,
         imm20: (raw >> 12) & 0xfffff,
         rd: (raw >> 7) & 0x1f,
+    })
+}
+
+/// Parse an instruction with the `Imm5Rd` format.
+pub fn parse_imm5_rd(op: OpcodeImm5Rd, raw: u32) -> Format {
+    Format::Imm5Rd(FormatImm5Rd {
+        op,
+        raw,
+        imm5: (raw >> 20) & 0x1f,
+        rd: (raw >> 7) & 0x1f,
+    })
+}
+
+/// Parse an instruction with the `Imm5RdRs1` format.
+pub fn parse_imm5_rd_rs1(op: OpcodeImm5RdRs1, raw: u32) -> Format {
+    Format::Imm5RdRs1(FormatImm5RdRs1 {
+        op,
+        raw,
+        imm5: (raw >> 20) & 0x1f,
+        rd: (raw >> 7) & 0x1f,
+        rs1: (raw >> 15) & 0x1f,
     })
 }
 
@@ -1963,6 +2226,16 @@ pub fn parse_rd_rs1_shamtw(op: OpcodeRdRs1Shamtw, raw: u32) -> Format {
     })
 }
 
+/// Parse an instruction with the `RdRs2` format.
+pub fn parse_rd_rs2(op: OpcodeRdRs2, raw: u32) -> Format {
+    Format::RdRs2(FormatRdRs2 {
+        op,
+        raw,
+        rd: (raw >> 7) & 0x1f,
+        rs2: (raw >> 20) & 0x1f,
+    })
+}
+
 /// Parse an instruction with the `Rs1` format.
 pub fn parse_rs1(op: OpcodeRs1, raw: u32) -> Format {
     Format::Rs1(FormatRs1 {
@@ -1980,4 +2253,619 @@ pub fn parse_rs1_rs2(op: OpcodeRs1Rs2, raw: u32) -> Format {
         rs1: (raw >> 15) & 0x1f,
         rs2: (raw >> 20) & 0x1f,
     })
+}
+
+/// Decode instruction into string.
+pub fn inst_to_string(raw: Format) -> String {
+    match raw {
+        Format::Unit(x) => x.op.to_string(),
+        Format::AqrlRdRs1(x) => x.op.to_string(),
+        Format::AqrlRdRs1Rs2(x) => x.op.to_string(),
+        Format::Bimm12hiBimm12loRs1Rs2(x) => x.op.to_string(),
+        Format::FmPredRdRs1Succ(x) => x.op.to_string(),
+        Format::Imm12Rd(x) => x.op.to_string(),
+        Format::Imm12RdRmRs1(x) => x.op.to_string(),
+        Format::Imm12RdRs1(x) => x.op.to_string(),
+        Format::Imm12Rs1(x) => x.op.to_string(),
+        Format::Imm12Rs1StaggerMaskStaggerMax(x) => x.op.to_string(),
+        Format::Imm12hiImm12loRs1Rs2(x) => x.op.to_string(),
+        Format::Imm20Rd(x) => x.op.to_string(),
+        Format::Imm5Rd(x) => x.op.to_string(),
+        Format::Imm5RdRs1(x) => x.op.to_string(),
+        Format::Jimm20Rd(x) => x.op.to_string(),
+        Format::RdRmRs1(x) => x.op.to_string(),
+        Format::RdRmRs1Rs2(x) => x.op.to_string(),
+        Format::RdRmRs1Rs2Rs3(x) => x.op.to_string(),
+        Format::RdRs1(x) => x.op.to_string(),
+        Format::RdRs1Rs2(x) => x.op.to_string(),
+        Format::RdRs1Rs2Rs3(x) => x.op.to_string(),
+        Format::RdRs1Rs3Shamt(x) => x.op.to_string(),
+        Format::RdRs1Shamt(x) => x.op.to_string(),
+        Format::RdRs1Shamtw(x) => x.op.to_string(),
+        Format::RdRs2(x) => x.op.to_string(),
+        Format::Rs1(x) => x.op.to_string(),
+        Format::Rs1Rs2(x) => x.op.to_string(),
+        _ => "Unsupported instruction format".to_string(),
+    }
+}
+/// Struct to store the latency of each instruction.
+#[derive(Debug, serde::Serialize, serde::Deserialize)]
+pub struct Latency {
+    // Format::Unit
+    ecall: u8,
+    ebreak: u8,
+    uret: u8,
+    sret: u8,
+    mret: u8,
+    dret: u8,
+    wfi: u8,
+    // Format::AqrlRdRs1
+    lr_w: u8,
+    lr_d: u8,
+    // Format::AqrlRdRs1Rs2
+    amoadd_w: u8,
+    amoxor_w: u8,
+    amoor_w: u8,
+    amoand_w: u8,
+    amomin_w: u8,
+    amomax_w: u8,
+    amominu_w: u8,
+    amomaxu_w: u8,
+    amoswap_w: u8,
+    sc_w: u8,
+    amoadd_d: u8,
+    amoxor_d: u8,
+    amoor_d: u8,
+    amoand_d: u8,
+    amomin_d: u8,
+    amomax_d: u8,
+    amominu_d: u8,
+    amomaxu_d: u8,
+    amoswap_d: u8,
+    sc_d: u8,
+    // Format::Bimm12hiBimm12loRs1Rs2
+    beq: u8,
+    bne: u8,
+    blt: u8,
+    bge: u8,
+    bltu: u8,
+    bgeu: u8,
+    // Format::FmPredRdRs1Succ
+    fence: u8,
+    // Format::Imm12Rd
+    scfgri: u8,
+    // Format::Imm12RdRmRs1
+    irep: u8,
+    // Format::Imm12RdRs1
+    jalr: u8,
+    addi: u8,
+    slti: u8,
+    sltiu: u8,
+    xori: u8,
+    ori: u8,
+    andi: u8,
+    addiw: u8,
+    lb: u8,
+    lh: u8,
+    lw: u8,
+    ld: u8,
+    lbu: u8,
+    lhu: u8,
+    lwu: u8,
+    fence_i: u8,
+    csrrw: u8,
+    csrrs: u8,
+    csrrc: u8,
+    csrrwi: u8,
+    csrrsi: u8,
+    csrrci: u8,
+    flw: u8,
+    fld: u8,
+    flq: u8,
+    // Format::Imm12Rs1
+    scfgwi: u8,
+    // Format::Imm12Rs1StaggerMaskStaggerMax
+    frep_o: u8,
+    frep_i: u8,
+    // Format::Imm12hiImm12loRs1Rs2
+    sb: u8,
+    sh: u8,
+    sw: u8,
+    sd: u8,
+    fsw: u8,
+    fsd: u8,
+    fsq: u8,
+    // Format::Imm20Rd
+    lui: u8,
+    auipc: u8,
+    // Format::Imm5Rd
+    dmstati: u8,
+    // Format::Imm5RdRs1
+    dmcpyi: u8,
+    // Format::Jimm20Rd
+    jal: u8,
+    // Format::RdRmRs1
+    fsqrt_s: u8,
+    fcvt_s_d: u8,
+    fcvt_d_s: u8,
+    fsqrt_d: u8,
+    fcvt_s_q: u8,
+    fcvt_q_s: u8,
+    fcvt_d_q: u8,
+    fcvt_q_d: u8,
+    fsqrt_q: u8,
+    fcvt_w_s: u8,
+    fcvt_wu_s: u8,
+    fcvt_l_s: u8,
+    fcvt_lu_s: u8,
+    fcvt_w_d: u8,
+    fcvt_wu_d: u8,
+    fcvt_l_d: u8,
+    fcvt_lu_d: u8,
+    fcvt_w_q: u8,
+    fcvt_wu_q: u8,
+    fcvt_l_q: u8,
+    fcvt_lu_q: u8,
+    fcvt_s_w: u8,
+    fcvt_s_wu: u8,
+    fcvt_s_l: u8,
+    fcvt_s_lu: u8,
+    fcvt_d_w: u8,
+    fcvt_d_wu: u8,
+    fcvt_d_l: u8,
+    fcvt_d_lu: u8,
+    fcvt_q_w: u8,
+    fcvt_q_wu: u8,
+    fcvt_q_l: u8,
+    fcvt_q_lu: u8,
+    // Format::RdRmRs1Rs2
+    fadd_s: u8,
+    fsub_s: u8,
+    fmul_s: u8,
+    fdiv_s: u8,
+    fadd_d: u8,
+    fsub_d: u8,
+    fmul_d: u8,
+    fdiv_d: u8,
+    fadd_q: u8,
+    fsub_q: u8,
+    fmul_q: u8,
+    fdiv_q: u8,
+    // Format::RdRmRs1Rs2Rs3
+    fmadd_s: u8,
+    fmsub_s: u8,
+    fnmsub_s: u8,
+    fnmadd_s: u8,
+    fmadd_d: u8,
+    fmsub_d: u8,
+    fnmsub_d: u8,
+    fnmadd_d: u8,
+    fmadd_q: u8,
+    fmsub_q: u8,
+    fnmsub_q: u8,
+    fnmadd_q: u8,
+    // Format::RdRs1
+    clz: u8,
+    ctz: u8,
+    pcnt: u8,
+    sext_b: u8,
+    sext_h: u8,
+    crc32_b: u8,
+    crc32_h: u8,
+    crc32_w: u8,
+    crc32c_b: u8,
+    crc32c_h: u8,
+    crc32c_w: u8,
+    fmv_x_w: u8,
+    fclass_s: u8,
+    fmv_x_d: u8,
+    fclass_d: u8,
+    fmv_x_q: u8,
+    fclass_q: u8,
+    fmv_w_x: u8,
+    fmv_d_x: u8,
+    fmv_q_x: u8,
+    // Format::RdRs1Rs2
+    add: u8,
+    sub: u8,
+    sll: u8,
+    slt: u8,
+    sltu: u8,
+    xor: u8,
+    srl: u8,
+    sra: u8,
+    or: u8,
+    and: u8,
+    addw: u8,
+    subw: u8,
+    sllw: u8,
+    srlw: u8,
+    sraw: u8,
+    mul: u8,
+    mulh: u8,
+    mulhsu: u8,
+    mulhu: u8,
+    div: u8,
+    divu: u8,
+    rem: u8,
+    remu: u8,
+    mulw: u8,
+    divw: u8,
+    divuw: u8,
+    remw: u8,
+    remuw: u8,
+    andn: u8,
+    orn: u8,
+    xnor: u8,
+    slo: u8,
+    sro: u8,
+    rol: u8,
+    ror: u8,
+    sbclr: u8,
+    sbset: u8,
+    sbinv: u8,
+    sbext: u8,
+    gorc: u8,
+    grev: u8,
+    sh1add: u8,
+    sh2add: u8,
+    sh3add: u8,
+    clmul: u8,
+    clmulr: u8,
+    clmulh: u8,
+    min: u8,
+    max: u8,
+    minu: u8,
+    maxu: u8,
+    shfl: u8,
+    unshfl: u8,
+    bext: u8,
+    bdep: u8,
+    pack: u8,
+    packu: u8,
+    packh: u8,
+    bfp: u8,
+    fsgnj_s: u8,
+    fsgnjn_s: u8,
+    fsgnjx_s: u8,
+    fmin_s: u8,
+    fmax_s: u8,
+    fsgnj_d: u8,
+    fsgnjn_d: u8,
+    fsgnjx_d: u8,
+    fmin_d: u8,
+    fmax_d: u8,
+    fsgnj_q: u8,
+    fsgnjn_q: u8,
+    fsgnjx_q: u8,
+    fmin_q: u8,
+    fmax_q: u8,
+    fle_s: u8,
+    flt_s: u8,
+    feq_s: u8,
+    fle_d: u8,
+    flt_d: u8,
+    feq_d: u8,
+    fle_q: u8,
+    flt_q: u8,
+    feq_q: u8,
+    dmcpy: u8,
+    // Format::RdRs1Rs2Rs3
+    cmix: u8,
+    cmov: u8,
+    fsl: u8,
+    fsr: u8,
+    // Format::RdRs1Rs3Shamt
+    fsri: u8,
+    // Format::RdRs1Shamt
+    slli: u8,
+    srli: u8,
+    srai: u8,
+    sloi: u8,
+    sroi: u8,
+    rori: u8,
+    sbclri: u8,
+    sbseti: u8,
+    sbinvi: u8,
+    sbexti: u8,
+    gorci: u8,
+    grevi: u8,
+    // Format::RdRs1Shamtw
+    slliw: u8,
+    srliw: u8,
+    sraiw: u8,
+    shfli: u8,
+    unshfli: u8,
+    // Format::RdRs2
+    dmstat: u8,
+    scfgr: u8,
+    // Format::Rs1
+    dmrep: u8,
+    // Format::Rs1Rs2
+    sfence_vma: u8,
+    hfence_bvma: u8,
+    hfence_gvma: u8,
+    dmsrc: u8,
+    dmdst: u8,
+    dmstr: u8,
+    scfgw: u8,
+}
+
+/// Struct to store the latency of each instruction.
+impl Default for Latency {
+    fn default() -> Latency {
+        Latency {
+            ecall: 1,
+            ebreak: 1,
+            uret: 1,
+            sret: 1,
+            mret: 1,
+            dret: 1,
+            wfi: 1,
+            lr_w: 1,
+            lr_d: 1,
+            amoadd_w: 1,
+            amoxor_w: 1,
+            amoor_w: 1,
+            amoand_w: 1,
+            amomin_w: 1,
+            amomax_w: 1,
+            amominu_w: 1,
+            amomaxu_w: 1,
+            amoswap_w: 1,
+            sc_w: 1,
+            amoadd_d: 1,
+            amoxor_d: 1,
+            amoor_d: 1,
+            amoand_d: 1,
+            amomin_d: 1,
+            amomax_d: 1,
+            amominu_d: 1,
+            amomaxu_d: 1,
+            amoswap_d: 1,
+            sc_d: 1,
+            beq: 1,
+            bne: 1,
+            blt: 1,
+            bge: 1,
+            bltu: 1,
+            bgeu: 1,
+            fence: 1,
+            scfgri: 1,
+            irep: 1,
+            jalr: 1,
+            addi: 1,
+            slti: 1,
+            sltiu: 1,
+            xori: 1,
+            ori: 1,
+            andi: 1,
+            addiw: 1,
+            lb: 1,
+            lh: 1,
+            lw: 1,
+            ld: 1,
+            lbu: 1,
+            lhu: 1,
+            lwu: 1,
+            fence_i: 1,
+            csrrw: 1,
+            csrrs: 1,
+            csrrc: 1,
+            csrrwi: 1,
+            csrrsi: 1,
+            csrrci: 1,
+            flw: 1,
+            fld: 1,
+            flq: 1,
+            scfgwi: 1,
+            frep_o: 1,
+            frep_i: 1,
+            sb: 1,
+            sh: 1,
+            sw: 1,
+            sd: 1,
+            fsw: 1,
+            fsd: 1,
+            fsq: 1,
+            lui: 1,
+            auipc: 1,
+            dmstati: 1,
+            dmcpyi: 1,
+            jal: 1,
+            fsqrt_s: 1,
+            fcvt_s_d: 1,
+            fcvt_d_s: 1,
+            fsqrt_d: 1,
+            fcvt_s_q: 1,
+            fcvt_q_s: 1,
+            fcvt_d_q: 1,
+            fcvt_q_d: 1,
+            fsqrt_q: 1,
+            fcvt_w_s: 1,
+            fcvt_wu_s: 1,
+            fcvt_l_s: 1,
+            fcvt_lu_s: 1,
+            fcvt_w_d: 1,
+            fcvt_wu_d: 1,
+            fcvt_l_d: 1,
+            fcvt_lu_d: 1,
+            fcvt_w_q: 1,
+            fcvt_wu_q: 1,
+            fcvt_l_q: 1,
+            fcvt_lu_q: 1,
+            fcvt_s_w: 1,
+            fcvt_s_wu: 1,
+            fcvt_s_l: 1,
+            fcvt_s_lu: 1,
+            fcvt_d_w: 1,
+            fcvt_d_wu: 1,
+            fcvt_d_l: 1,
+            fcvt_d_lu: 1,
+            fcvt_q_w: 1,
+            fcvt_q_wu: 1,
+            fcvt_q_l: 1,
+            fcvt_q_lu: 1,
+            fadd_s: 1,
+            fsub_s: 1,
+            fmul_s: 1,
+            fdiv_s: 1,
+            fadd_d: 1,
+            fsub_d: 1,
+            fmul_d: 1,
+            fdiv_d: 1,
+            fadd_q: 1,
+            fsub_q: 1,
+            fmul_q: 1,
+            fdiv_q: 1,
+            fmadd_s: 1,
+            fmsub_s: 1,
+            fnmsub_s: 1,
+            fnmadd_s: 1,
+            fmadd_d: 1,
+            fmsub_d: 1,
+            fnmsub_d: 1,
+            fnmadd_d: 1,
+            fmadd_q: 1,
+            fmsub_q: 1,
+            fnmsub_q: 1,
+            fnmadd_q: 1,
+            clz: 1,
+            ctz: 1,
+            pcnt: 1,
+            sext_b: 1,
+            sext_h: 1,
+            crc32_b: 1,
+            crc32_h: 1,
+            crc32_w: 1,
+            crc32c_b: 1,
+            crc32c_h: 1,
+            crc32c_w: 1,
+            fmv_x_w: 1,
+            fclass_s: 1,
+            fmv_x_d: 1,
+            fclass_d: 1,
+            fmv_x_q: 1,
+            fclass_q: 1,
+            fmv_w_x: 1,
+            fmv_d_x: 1,
+            fmv_q_x: 1,
+            add: 1,
+            sub: 1,
+            sll: 1,
+            slt: 1,
+            sltu: 1,
+            xor: 1,
+            srl: 1,
+            sra: 1,
+            or: 1,
+            and: 1,
+            addw: 1,
+            subw: 1,
+            sllw: 1,
+            srlw: 1,
+            sraw: 1,
+            mul: 1,
+            mulh: 1,
+            mulhsu: 1,
+            mulhu: 1,
+            div: 1,
+            divu: 1,
+            rem: 1,
+            remu: 1,
+            mulw: 1,
+            divw: 1,
+            divuw: 1,
+            remw: 1,
+            remuw: 1,
+            andn: 1,
+            orn: 1,
+            xnor: 1,
+            slo: 1,
+            sro: 1,
+            rol: 1,
+            ror: 1,
+            sbclr: 1,
+            sbset: 1,
+            sbinv: 1,
+            sbext: 1,
+            gorc: 1,
+            grev: 1,
+            sh1add: 1,
+            sh2add: 1,
+            sh3add: 1,
+            clmul: 1,
+            clmulr: 1,
+            clmulh: 1,
+            min: 1,
+            max: 1,
+            minu: 1,
+            maxu: 1,
+            shfl: 1,
+            unshfl: 1,
+            bext: 1,
+            bdep: 1,
+            pack: 1,
+            packu: 1,
+            packh: 1,
+            bfp: 1,
+            fsgnj_s: 1,
+            fsgnjn_s: 1,
+            fsgnjx_s: 1,
+            fmin_s: 1,
+            fmax_s: 1,
+            fsgnj_d: 1,
+            fsgnjn_d: 1,
+            fsgnjx_d: 1,
+            fmin_d: 1,
+            fmax_d: 1,
+            fsgnj_q: 1,
+            fsgnjn_q: 1,
+            fsgnjx_q: 1,
+            fmin_q: 1,
+            fmax_q: 1,
+            fle_s: 1,
+            flt_s: 1,
+            feq_s: 1,
+            fle_d: 1,
+            flt_d: 1,
+            feq_d: 1,
+            fle_q: 1,
+            flt_q: 1,
+            feq_q: 1,
+            dmcpy: 1,
+            cmix: 1,
+            cmov: 1,
+            fsl: 1,
+            fsr: 1,
+            fsri: 1,
+            slli: 1,
+            srli: 1,
+            srai: 1,
+            sloi: 1,
+            sroi: 1,
+            rori: 1,
+            sbclri: 1,
+            sbseti: 1,
+            sbinvi: 1,
+            sbexti: 1,
+            gorci: 1,
+            grevi: 1,
+            slliw: 1,
+            srliw: 1,
+            sraiw: 1,
+            shfli: 1,
+            unshfli: 1,
+            dmstat: 1,
+            scfgr: 1,
+            dmrep: 1,
+            sfence_vma: 1,
+            hfence_bvma: 1,
+            hfence_gvma: 1,
+            dmsrc: 1,
+            dmdst: 1,
+            dmstr: 1,
+            scfgw: 1,
+        }
+    }
 }

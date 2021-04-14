@@ -21,6 +21,10 @@ use std::{
 
 static NONAME: &'static i8 = unsafe { std::mem::transmute("\0".as_ptr()) };
 
+/// Base address of the stream semantic regsiters
+static SSR_BASE: u64 = 0x204800;
+static SSR_N_STREAMERS: u32 = 2;
+
 /// Number of arguments the trace maximally shows per instruction.
 const TRACE_BUFFER_LEN: u32 = 8;
 
@@ -29,10 +33,10 @@ const SEQ_BUFFER_LEN: u8 = 16;
 
 /// The sequencer's JIT iterators for loop emulation.
 struct SequencerIterators {
-    /// A u8* pointing to the current stagger offset.
-    stg_ptr_ref: LLVMValueRef,
     /// A u32* pointing to the repetition index.
     rpt_ptr_ref: LLVMValueRef,
+    /// A u32* pointing to the repetition maximum.
+    max_rpt_ref: LLVMValueRef,
 }
 
 /// The sequencer's context during section-level translation.
@@ -41,8 +45,6 @@ struct SequencerContext {
     active: bool,
     /// The biggest instruction index to buffer.
     max_inst: u8,
-    /// A u32 repetition index until which the block is iterated.
-    max_rpt_ref: LLVMValueRef,
     /// Whether repetition is block-first or instruction-first.
     is_outer: bool,
     /// The maximum stagger index.
@@ -50,17 +52,29 @@ struct SequencerContext {
     /// A mask indicating which register numbers to stagger.
     stagger_mask: u8,
     /// The addresses for the instruction basic blocks buffered.
-    inst_buffer: [u64; SEQ_BUFFER_LEN as usize],
+    inst_buffer: [(u64, riscv::Format); SEQ_BUFFER_LEN as usize],
     /// The current buffer insertion point.
     buffer_pos: u8,
 }
 
 impl SequencerContext {
+    /// Create a new sequencer context.
+    fn new() -> Self {
+        SequencerContext {
+            active: false,
+            max_inst: 0,
+            is_outer: false,
+            stagger_max: 0,
+            stagger_mask: 0,
+            inst_buffer: [(0, riscv::Format::Illegal(0)); SEQ_BUFFER_LEN as usize],
+            buffer_pos: 0,
+        }
+    }
+
     /// Initialize a sequence job.
     fn init_rep(
         &mut self,
         max_inst: u8,
-        max_rpt_ref: LLVMValueRef,
         is_outer: bool,
         stagger_max: u8,
         stagger_mask: u8,
@@ -68,7 +82,6 @@ impl SequencerContext {
         if !self.active {
             self.active = true;
             self.max_inst = max_inst;
-            self.max_rpt_ref = max_rpt_ref;
             self.is_outer = is_outer;
             self.stagger_mask = stagger_mask;
             self.stagger_max = stagger_max;
@@ -88,10 +101,10 @@ impl SequencerContext {
     }
 
     /// Push an instruction into the sequence buffer.
-    fn push_rep_instruction(&mut self, inst_bb_addr: u64) -> Result<()> {
+    fn push_rep_instruction(&mut self, addr: u64, inst: riscv::Format) -> Result<()> {
         if self.active {
             if self.buffer_pos <= self.max_inst {
-                self.inst_buffer[self.buffer_pos as usize] = inst_bb_addr;
+                self.inst_buffer[self.buffer_pos as usize] = (addr, inst);
                 self.buffer_pos += 1;
                 Ok(())
             } else {
@@ -106,7 +119,7 @@ impl SequencerContext {
         }
     }
 
-    // Whether repetition body is complete and ready for loop emission.
+    /// Whether repetition body is complete and ready for loop emission.
     fn is_body_complete(&self) -> bool {
         self.buffer_pos == self.max_inst + 1
     }
@@ -131,6 +144,8 @@ pub struct ElfTranslator<'a> {
     pub inst_bbs: HashMap<u64, LLVMBasicBlockRef>,
     /// Generate instruction tracing code.
     pub trace: bool,
+    /// Generate instruction tracing code.
+    pub latency: bool,
     /// Start address of the fast local scratchpad.
     pub tcdm_start: u32,
     /// End address of the fast local scratchpad.
@@ -184,8 +199,9 @@ impl<'a> ElfTranslator<'a> {
             symbol_hints: Default::default(),
             inst_bbs: Default::default(),
             trace: engine.trace,
-            tcdm_start: 0x000000,
-            tcdm_end: 0x020000,
+            latency: engine.latency,
+            tcdm_start: engine.config.memory.tcdm.start,
+            tcdm_end: engine.config.memory.tcdm.end,
         }
     }
 
@@ -401,15 +417,22 @@ impl<'a> ElfTranslator<'a> {
         };
 
         // Allocate the sequencer iterators and init them as pointing to a zero constant.
-        let const_zero_8 = LLVMConstInt(LLVMInt8Type(), 0, 0);
-        let stg_ptr_ref = LLVMBuildAlloca(builder, LLVMInt8Type(), NONAME);
-        LLVMBuildStore(builder, const_zero_8, stg_ptr_ref);
         let const_zero_32 = LLVMConstInt(LLVMInt32Type(), 0, 0);
-        let rpt_ptr_ref = LLVMBuildAlloca(builder, LLVMInt32Type(), NONAME);
+        let rpt_ptr_ref = LLVMBuildAlloca(
+            builder,
+            LLVMInt32Type(),
+            b"frep_rpt_ptr\0".as_ptr() as *const _,
+        );
         LLVMBuildStore(builder, const_zero_32, rpt_ptr_ref);
+        let max_rpt_ref = LLVMBuildAlloca(
+            builder,
+            LLVMInt32Type(),
+            b"frep_max_rpt\0".as_ptr() as *const _,
+        );
+        LLVMBuildStore(builder, const_zero_32, max_rpt_ref);
         let fseq_iter = SequencerIterators {
-            stg_ptr_ref,
             rpt_ptr_ref,
+            max_rpt_ref,
         };
 
         // Gather the set of executable addresses.
@@ -551,10 +574,8 @@ impl<'a> ElfTranslator<'a> {
     }
 
     unsafe fn lookup_func(&self, name: &str) -> LLVMValueRef {
-        let ptr = LLVMGetNamedFunction(
-            self.engine.module,
-            CString::new(name).unwrap().as_ptr() as *const _,
-        );
+        let n = CString::new(name).unwrap();
+        let ptr = LLVMGetNamedFunction(self.engine.module, n.as_ptr() as *const _);
         assert!(
             !ptr.is_null(),
             "function `{}` not found in LLVM module",
@@ -644,27 +665,141 @@ impl<'a> SectionTranslator<'a> {
     }
 
     /// Emit the code for the remaining iterations of a buffered FREP loop.
-    unsafe fn emit_frep(&self, fseq: &SequencerContext, curr_addr: u64) -> Result<()> {
-        // TODO: Handle staggering by loading stagger aloca, adding to reg indices directly in instuction IR emission.
+    unsafe fn emit_frep(
+        &self,
+        inst_index: &mut u32,
+        fseq: &SequencerContext,
+        curr_addr: u64,
+    ) -> Result<()> {
+        // Create dummy sequencer context for inner use
+        let mut fseq_inner = SequencerContext::new();
+
         if fseq.is_outer {
+            // Create basic block for first increment-and-branch ahead of time
+            let mut bb_incr_branch = LLVMCreateBasicBlockInContext(self.engine.context, NONAME);
+
+            // Jump to first increment-and-branch block from unterminated last frep instruction block
+            if LLVMGetBasicBlockTerminator(LLVMGetInsertBlock(self.builder)).is_null() {
+                LLVMBuildBr(self.builder, bb_incr_branch);
+            } else {
+                error!("Cannot add branch to FREP to already terminated instruction");
+            }
+
+            // Create staggered loop bodies if any
+            for stg_offs in 1..=(fseq.stagger_max as u32) {
+                // Place and start inserting into block for increment-and-branch
+                LLVMInsertExistingBasicBlockAfterInsertBlock(self.builder, bb_incr_branch);
+                LLVMPositionBuilderAtEnd(self.builder, bb_incr_branch);
+
+                // Load repetition counter from stack.
+                let rpt_cnt = LLVMBuildLoad(self.builder, self.fseq_iter.rpt_ptr_ref, NONAME);
+                // Load max repetition from stack.
+                let max_rpt = LLVMBuildLoad(self.builder, self.fseq_iter.max_rpt_ref, NONAME);
+                // Compare to repetition maximum: repeat if less than maximum iteration.
+                let rpt_cmp = LLVMBuildICmp(self.builder, LLVMIntULT, rpt_cnt, max_rpt, NONAME);
+                // Increment rep counter, store
+                let const_one = LLVMConstInt(LLVMTypeOf(rpt_cnt), 1, 0);
+                let rpt_cnt_inc = LLVMBuildAdd(self.builder, rpt_cnt, const_one, NONAME);
+                LLVMBuildStore(self.builder, rpt_cnt_inc, self.fseq_iter.rpt_ptr_ref);
+
+                // Create basic block for first loop instruction ahead of time
+                let mut bb_loop_inst = LLVMCreateBasicBlockInContext(self.engine.context, NONAME);
+                // Insert branch terminating the FREP iterations or going to next loop body (following terminator will be omitted).
+                LLVMBuildCondBr(
+                    self.builder,
+                    rpt_cmp,
+                    bb_loop_inst,
+                    self.elf.inst_bbs[&(curr_addr + 4)],
+                );
+
+                // Emit loop body for current stagger offset
+                for &(addr, inst_nonstag) in fseq.inst_buffer[0..=(fseq.max_inst as usize)].iter() {
+                    // Read register fields
+                    let inst_raw = inst_nonstag.raw();
+                    let mut rd = (inst_raw >> 7) & 0x1f;
+                    let mut rs1 = (inst_raw >> 15) & 0x1f;
+                    let mut rs2 = (inst_raw >> 20) & 0x1f;
+                    let mut rs3 = (inst_raw >> 27) & 0x1f;
+                    // Stagger register fields
+                    if fseq.stagger_mask & 0b0001 != 0 {
+                        rd = (rd + stg_offs) & 0x1f;
+                    }
+                    if fseq.stagger_mask & 0b0010 != 0 {
+                        rs1 = (rs1 + stg_offs) & 0x1f;
+                    }
+                    if fseq.stagger_mask & 0b0100 != 0 {
+                        rs2 = (rs2 + stg_offs) & 0x1f;
+                    }
+                    if fseq.stagger_mask & 0b1000 != 0 {
+                        rs3 = (rs3 + stg_offs) & 0x1f;
+                    }
+                    // Assemble, return new instruction
+                    const MREST: u32 =
+                        0xffff_ffff ^ ((0x1f << 7) | (0x1f << 15) | (0x1f << 20) | (0x1f << 27));
+                    let inst = riscv::parse_u32(
+                        (inst_raw & MREST) | (rd << 7) | (rs1 << 15) | (rs2 << 20) | (rs3 << 27),
+                    );
+
+                    // Create translator for staggered instruction
+                    let tran = InstructionTranslator {
+                        section: self,
+                        builder: self.builder,
+                        addr,
+                        inst,
+                        was_terminator: Default::default(),
+                        trace_accesses: Default::default(),
+                        trace_emitted: Default::default(),
+                        trace_disabled: Default::default(),
+                        was_freppable: Default::default(),
+                    };
+                    // Place and start inserting into premade loop instruction block
+                    LLVMInsertExistingBasicBlockAfterInsertBlock(self.builder, bb_loop_inst);
+                    LLVMPositionBuilderAtEnd(self.builder, bb_loop_inst);
+                    // Emit instruction into loop instruction block
+                    match tran.emit(inst_index, &mut fseq_inner) {
+                        Ok(()) => (),
+                        Err(e) => {
+                            error!("{}", e);
+                            self.emit_illegal_abort(addr, inst);
+                        }
+                    }
+                    // Create next loop instruction block ahead of time
+                    bb_loop_inst = LLVMCreateBasicBlockInContext(self.engine.context, NONAME);
+                    // Terminate with branch to next loop instruction block
+                    if LLVMGetBasicBlockTerminator(LLVMGetInsertBlock(self.builder)).is_null() {
+                        LLVMBuildBr(self.builder, bb_loop_inst);
+                    } else {
+                        error!("Cannot use terminating instruction inside an FREP");
+                    }
+                }
+
+                // Use left-over loop instruction block as next increment-and-branch block
+                bb_incr_branch = bb_loop_inst;
+            }
+
+            // Place and start inserting into final branch-and-increment block pointing back to original loop body
+            LLVMInsertExistingBasicBlockAfterInsertBlock(self.builder, bb_incr_branch);
+            LLVMPositionBuilderAtEnd(self.builder, bb_incr_branch);
+
             // Load repetition counter from stack.
             let rpt_cnt = LLVMBuildLoad(self.builder, self.fseq_iter.rpt_ptr_ref, NONAME);
+            // Load max repetition from stack.
+            let max_rpt = LLVMBuildLoad(self.builder, self.fseq_iter.max_rpt_ref, NONAME);
             // Compare to repetition maximum: repeat if less than maximum iteration.
-            let rpt_cmp =
-                LLVMBuildICmp(self.builder, LLVMIntULT, rpt_cnt, fseq.max_rpt_ref, NONAME);
-            // Jump back to beginning of loop body if repetitions left, else go to next PC.
-            let target = fseq.inst_buffer[0];
+            let rpt_cmp = LLVMBuildICmp(self.builder, LLVMIntULT, rpt_cnt, max_rpt, NONAME);
             // Increment rep counter, store
             let const_one = LLVMConstInt(LLVMTypeOf(rpt_cnt), 1, 0);
             let rpt_cnt_inc = LLVMBuildAdd(self.builder, rpt_cnt, const_one, NONAME);
             LLVMBuildStore(self.builder, rpt_cnt_inc, self.fseq_iter.rpt_ptr_ref);
-            // Insert branch as terminator (following terminator will be omitted).
+
+            // Insert branch terminating the FREP iterations or going to original loop body (following terminator will be omitted).
             LLVMBuildCondBr(
                 self.builder,
                 rpt_cmp,
-                self.elf.inst_bbs[&target],
+                self.elf.inst_bbs[&(fseq.inst_buffer[0].0)],
                 self.elf.inst_bbs[&(curr_addr + 4)],
             );
+
             Ok(())
         } else {
             Err(anyhow!("Inner FREP not yet supported"))
@@ -674,16 +809,7 @@ impl<'a> SectionTranslator<'a> {
     /// Emit the code for the entire section.
     unsafe fn emit(&self, inst_index: &mut u32) -> Result<()> {
         // Initialize floating point sequencer context.
-        let mut fseq = SequencerContext {
-            active: false,
-            max_inst: 0,
-            max_rpt_ref: LLVMConstInt(LLVMInt32Type(), 0 as u64, 0),
-            is_outer: false,
-            stagger_max: 0,
-            stagger_mask: 0,
-            inst_buffer: [0; SEQ_BUFFER_LEN as usize],
-            buffer_pos: 0,
-        };
+        let mut fseq = SequencerContext::new();
         // iterate over section instructions
         for (addr, inst) in self.elf.instructions(self.section) {
             let tran = InstructionTranslator {
@@ -707,9 +833,9 @@ impl<'a> SectionTranslator<'a> {
             }
             // Note that FREP itself is not freppable.
             if fseq.active && tran.was_freppable.get() {
-                fseq.push_rep_instruction(addr)?;
+                fseq.push_rep_instruction(addr, inst)?;
                 if !fseq.is_outer || fseq.is_body_complete() {
-                    self.emit_frep(&fseq, addr)?;
+                    self.emit_frep(inst_index, &fseq, addr)?;
                     fseq.active = false;
                 }
             }
@@ -829,14 +955,24 @@ impl<'a> InstructionTranslator<'a> {
         );
         LLVMBuildStore(self.builder, instret, self.instret_ptr());
 
+        // reset ssr streamer flags to serve new values for SSR registers
+        for i in 0..SSR_N_STREAMERS {
+            self.section.emit_call("banshee_ssr_eoi", [self.ssr_ptr(i)]);
+        }
+
         // Emit the code for the instruction itself.
         match self.inst {
             //  riscv::Format::AqrlRdRs1(x) => self.emit_aqrl_rd_rs1(x),
             riscv::Format::AqrlRdRs1Rs2(x) => self.emit_aqrl_rd_rs1_rs2(x),
             riscv::Format::Bimm12hiBimm12loRs1Rs2(x) => self.emit_bimm12hi_bimm12lo_rs1_rs2(x),
+            riscv::Format::Imm5Rd(x) => self.emit_imm5_rd(x),
             riscv::Format::Imm12Rd(x) => self.emit_imm12_rd(x),
+            riscv::Format::Imm5RdRs1(x) => self.emit_imm5_rd_rs1(x),
             riscv::Format::Imm12RdRs1(x) => self.emit_imm12_rd_rs1(x),
-            riscv::Format::Imm12RdRmRs1(x) => self.emit_imm12_rd_rm_rs1(x, fseq),
+            riscv::Format::Imm12Rs1StaggerMaskStaggerMax(x) => {
+                self.emit_imm12_rs1_staggermask_staggermax(x, fseq)
+            }
+            riscv::Format::Imm12Rs1(x) => self.emit_imm12_rs1(x),
             riscv::Format::Imm12hiImm12loRs1Rs2(x) => self.emit_imm12hi_imm12lo_rs1_rs2(x),
             riscv::Format::Imm20Rd(x) => self.emit_imm20_rd(x),
             riscv::Format::Jimm20Rd(x) => self.emit_jimm20_rd(x),
@@ -846,7 +982,9 @@ impl<'a> InstructionTranslator<'a> {
             riscv::Format::RdRs1(x) => self.emit_rd_rs1(x),
             riscv::Format::RdRs1Rs2(x) => self.emit_rd_rs1_rs2(x),
             riscv::Format::RdRs1Shamt(x) => self.emit_rd_rs1_shamt(x),
+            riscv::Format::Rs1(x) => self.emit_rs1(x),
             riscv::Format::Rs1Rs2(x) => self.emit_rs1_rs2(x),
+            riscv::Format::RdRs2(x) => self.emit_rd_rs2(x),
             riscv::Format::Unit(x) => self.emit_unit(x),
             _ => Err(anyhow!("Unsupported instruction format")),
         }
@@ -1078,6 +1216,37 @@ impl<'a> InstructionTranslator<'a> {
         Ok(())
     }
 
+    unsafe fn emit_imm12_rs1(&self, data: riscv::FormatImm12Rs1) -> Result<()> {
+        let imm = data.imm();
+        trace!("{} x{}, {}", data.op, data.rs1, imm);
+
+        // Compute the address.
+        let rs1 = self.read_reg(data.rs1);
+
+        // Perform the operation.
+        match data.op {
+            // suppress compiler warning that detects the bail! statement as unrechable
+            // Scfgwi is currently the OpcodeImm12Rs1 but this might change
+            #![allow(unreachable_patterns)]
+            riscv::OpcodeImm12Rs1::Scfgwi => {
+                // ssr write immediate holds address offset in imm12, content in rs1
+                // imm12[11:5]=reg_word imm12[4:0]=dm -> addr_off = {dm, reg_word[4:0], 000}
+                let dm = (imm as u64) & 0x1f;
+                let reg_word = ((imm as u64) >> 5) & 0x1f;
+                let addr_off = LLVMConstInt(LLVMInt32Type(), (dm << 8) | (reg_word << 3), 0);
+                let addr = LLVMBuildAdd(
+                    self.builder,
+                    LLVMConstInt(LLVMInt32Type(), SSR_BASE, 0),
+                    addr_off,
+                    NONAME,
+                );
+                self.write_mem(addr, rs1, 2);
+            }
+            _ => bail!("Unsupported opcode {}", data.op),
+        };
+        Ok(())
+    }
+
     unsafe fn emit_imm12hi_imm12lo_rs1_rs2(
         &self,
         data: riscv::FormatImm12hiImm12loRs1Rs2,
@@ -1135,17 +1304,59 @@ impl<'a> InstructionTranslator<'a> {
         Ok(())
     }
 
-    unsafe fn emit_imm12_rd(&self, data: riscv::FormatImm12Rd) -> Result<()> {
-        let imm = data.imm();
+    unsafe fn emit_imm5_rd(&self, data: riscv::FormatImm5Rd) -> Result<()> {
+        let imm = data.imm5;
         trace!("{} x{} = 0x{:x}", data.op, data.rd, imm);
         let imm = LLVMConstInt(LLVMInt32Type(), (imm as i64) as u64, 0);
         let name = format!("{}\0", data.op);
         let _name = name.as_ptr() as *const _;
+
         let value = match data.op {
-            riscv::OpcodeImm12Rd::DmStati => self
+            riscv::OpcodeImm5Rd::Dmstati => self
                 .section
                 .emit_call("banshee_dma_stat", [self.dma_ptr(), imm]),
+        };
+        self.write_reg(data.rd, value);
+        Ok(())
+    }
+
+    unsafe fn emit_imm12_rd(&self, data: riscv::FormatImm12Rd) -> Result<()> {
+        let imm = data.imm();
+        trace!("{} x{} = 0x{:x}", data.op, data.rd, imm);
+        let name = format!("{}\0", data.op);
+        let _name = name.as_ptr() as *const _;
+
+        let ssr_start = LLVMConstInt(LLVMInt32Type(), SSR_BASE, 0);
+
+        match data.op {
+            // suppress compiler warning that detects the bail! statement as unrechable
+            // Scfgri is currently the OpcodeImm12Rd but this might change
+            #![allow(unreachable_patterns)]
+            riscv::OpcodeImm12Rd::Scfgri => {
+                // srr load immediate from offset in imm12
+                // reorder imm12 to form address
+                // imm12[11:5]=reg_word imm12[4:0]=dm -> addr_off = {dm, reg_word[4:0], 000}
+                let dm = (imm as u64) & 0x1f;
+                let reg_word = ((imm as u64) >> 5) & 0x1f;
+                let addr_off = LLVMConstInt(LLVMInt32Type(), (dm << 8) | (reg_word << 3), 0);
+                let value = self.emit_load(ssr_start, addr_off, 2, true);
+                self.write_reg(data.rd, value);
+            }
             _ => bail!("Unsupported opcode {}", data.op),
+        };
+        Ok(())
+    }
+
+    unsafe fn emit_imm5_rd_rs1(&self, data: riscv::FormatImm5RdRs1) -> Result<()> {
+        let imm = data.imm5;
+        let rs1 = self.read_reg(data.rs1);
+        let imm = LLVMConstInt(LLVMInt32Type(), (imm as i64) as u64, 0);
+        let value = match data.op {
+            riscv::OpcodeImm5RdRs1::Dmcpyi => self.section.emit_call(
+                "banshee_dma_strt",
+                [self.dma_ptr(), self.section.state_ptr, rs1, imm],
+            ),
+            // _ => bail!("Unsupported opcode {}", data.op),
         };
         self.write_reg(data.rd, value);
         Ok(())
@@ -1235,20 +1446,6 @@ impl<'a> InstructionTranslator<'a> {
                 self.emit_fld(data.rd, LLVMBuildAdd(self.builder, rs1, imm, NONAME));
                 return Ok(());
             }
-            riscv::OpcodeImm12RdRs1::DmStrti => self.section.emit_call(
-                "banshee_dma_strt",
-                [
-                    self.dma_ptr(),
-                    LLVMBuildBitCast(
-                        self.builder,
-                        self.section.state_ptr,
-                        LLVMPointerType(LLVMInt8Type(), 0),
-                        NONAME,
-                    ),
-                    rs1,
-                    imm,
-                ],
-            ),
             _ => bail!("Unsupported opcode {}", data.op),
         };
         self.write_reg(data.rd, value);
@@ -1336,8 +1533,89 @@ impl<'a> InstructionTranslator<'a> {
                 let value = LLVMBuildUIToFP(self.builder, rs1, LLVMFloatType(), name);
                 self.write_freg_f32(data.rd, value);
             }
+            riscv::OpcodeRdRmRs1::FcvtWD => {
+                let rs1 = self.read_freg_f64(data.rs1);
+                let value = LLVMBuildFPToSI(self.builder, rs1, LLVMInt32Type(), name);
+                self.write_reg(data.rd, value);
+            }
+            riscv::OpcodeRdRmRs1::FcvtWS => {
+                let rs1 = self.read_freg_f32(data.rs1);
+                let value = LLVMBuildFPToSI(self.builder, rs1, LLVMInt32Type(), name);
+                self.write_reg(data.rd, value);
+            }
+            riscv::OpcodeRdRmRs1::FcvtWuS => {
+                let rs1 = self.read_freg_f32(data.rs1);
+                let value = LLVMBuildFPToUI(self.builder, rs1, LLVMInt32Type(), name);
+                self.write_reg(data.rd, value);
+            }
+            riscv::OpcodeRdRmRs1::FcvtWuD => {
+                let rs1 = self.read_freg_f64(data.rs1);
+                let value = LLVMBuildFPToUI(self.builder, rs1, LLVMInt32Type(), name);
+                self.write_reg(data.rd, value);
+            }
+            riscv::OpcodeRdRmRs1::FcvtDS => {
+                let rs1 = self.read_freg_f32(data.rs1);
+                let value = LLVMBuildFPCast(self.builder, rs1, LLVMDoubleType(), name);
+                self.write_freg_f64(data.rd, value);
+            }
+            riscv::OpcodeRdRmRs1::FcvtSD => {
+                let rs1 = self.read_freg_f64(data.rs1);
+                let value = LLVMBuildFPCast(self.builder, rs1, LLVMFloatType(), name);
+                self.write_freg_f32(data.rd, value);
+            }
             _ => bail!("Unsupported opcode {}", data.op),
         };
+        Ok(())
+    }
+
+    unsafe fn emit_rd_rs2(&self, data: riscv::FormatRdRs2) -> Result<()> {
+        trace!("{} x{}, f{}", data.op, data.rd, data.rs2);
+        let rs2 = self.read_reg(data.rs2);
+
+        let value = match data.op {
+            riscv::OpcodeRdRs2::Scfgr => {
+                // reorder rs2 to form address
+                // rs2[11:5]=reg_word rs2[4:0]=dm -> addr_off = {dm, reg_word[4:0], 000}
+                let reg = LLVMBuildLShr(
+                    self.builder,
+                    rs2,
+                    LLVMConstInt(LLVMInt32Type(), 2 as u64, 0),
+                    NONAME,
+                );
+                let reg_masked = LLVMBuildAnd(
+                    self.builder,
+                    reg,
+                    LLVMConstInt(LLVMInt32Type(), 0xf8 as u64, 0),
+                    NONAME,
+                );
+                let rs2_dm = LLVMBuildAnd(
+                    self.builder,
+                    rs2,
+                    LLVMConstInt(LLVMInt32Type(), 0x1f as u64, 0),
+                    NONAME,
+                );
+                let rs2_dm_shifted = LLVMBuildShl(
+                    self.builder,
+                    rs2_dm,
+                    LLVMConstInt(LLVMInt32Type(), 8 as u64, 0),
+                    NONAME,
+                );
+                let addr_off = LLVMBuildOr(self.builder, rs2_dm_shifted, reg_masked, NONAME);
+                // perform load
+                self.emit_load(
+                    LLVMConstInt(LLVMInt32Type(), SSR_BASE, 0),
+                    addr_off,
+                    2,
+                    true,
+                )
+            }
+            riscv::OpcodeRdRs2::Dmstat => self
+                .section
+                .emit_call("banshee_dma_stat", [self.dma_ptr(), rs2]),
+            // _ => bail!("Unsupported opcode {}", data.op),
+        };
+
+        self.write_reg(data.rd, value);
         Ok(())
     }
 
@@ -1465,27 +1743,46 @@ impl<'a> InstructionTranslator<'a> {
         Ok(())
     }
 
-    unsafe fn emit_imm12_rd_rm_rs1(
+    unsafe fn emit_imm12_rs1_staggermask_staggermax(
         &self,
-        data: riscv::FormatImm12RdRmRs1,
+        data: riscv::FormatImm12Rs1StaggerMaskStaggerMax,
         fseq: &mut SequencerContext,
     ) -> Result<()> {
         trace!(
-            "{} x{}, {}, 0b{:b}, {}, {}",
+            "{} x{}, {}, 0b{:b}, {}",
             data.op,
-            data.rs1,     // register containing max repetition
-            data.imm12,   // max instruction
-            data.rd >> 1, // stagger mask
-            data.rm,      // stagger max
-            data.rd & 1   // whether outer loop
+            data.rs1,          // register containing max repetition
+            data.imm12,        // max instruction
+            data.stagger_mask, // stagger mask
+            data.stagger_max   // stagger max
+        );
+        // Initialize repetition iterator to 0
+        LLVMBuildStore(
+            self.builder,
+            LLVMConstInt(LLVMInt32Type(), 0, 0),
+            self.section.fseq_iter.rpt_ptr_ref,
+        );
+        // Initialize repetition bound
+        LLVMBuildStore(
+            self.builder,
+            self.read_reg(data.rs1),
+            self.section.fseq_iter.max_rpt_ref,
         );
         match data.op {
-            riscv::OpcodeImm12RdRmRs1::Frep => fseq.init_rep(
+            // suppress compiler warning that detects the bail! statement as unrechable
+            // Frep* are currently the only OpcodeImm12Rs1Stagger_maskStagger_max but this might change
+            #![allow(unreachable_patterns)]
+            riscv::OpcodeImm12Rs1StaggerMaskStaggerMax::FrepO => fseq.init_rep(
                 data.imm12 as u8,
-                self.read_reg(data.rs1),
-                data.rd != 0,
-                (data.rd & 1) as u8,
-                (data.rs1) as u8,
+                true,
+                data.stagger_max as u8,
+                data.stagger_mask as u8,
+            ),
+            riscv::OpcodeImm12Rs1StaggerMaskStaggerMax::FrepI => fseq.init_rep(
+                data.imm12 as u8,
+                false,
+                data.stagger_max as u8,
+                data.stagger_mask as u8,
             ),
             _ => bail!("Unsupported opcode {}", data.op),
         }
@@ -1548,14 +1845,49 @@ impl<'a> InstructionTranslator<'a> {
         trace!("{} x{} = x{}", data.op, data.rd, data.rs1);
         let name = format!("{}\0", data.op);
         let _name = name.as_ptr() as *const _;
-        let rs1 = self.read_reg(data.rs1);
-        let value = match data.op {
-            riscv::OpcodeRdRs1::DmStat => self
-                .section
-                .emit_call("banshee_dma_stat", [self.dma_ptr(), rs1]),
-            _ => bail!("Unsupported opcode {}", data.op),
-        };
-        self.write_reg(data.rd, value);
+
+        // Handle floating-point operations
+        match data.op {
+            riscv::OpcodeRdRs1::FmvXW => {
+                // float (rs1) to integer (rd) register, bits are not modified
+                let rs1 = self.read_freg_f32(data.rs1);
+                // cast the integer reg pointer to a float pointer
+                let raw_ptr = self.reg_ptr(data.rd);
+                let ptr = LLVMBuildBitCast(
+                    self.builder,
+                    raw_ptr,
+                    LLVMPointerType(LLVMFloatType(), 0),
+                    NONAME,
+                );
+                // build the actual store and add trace
+                LLVMBuildStore(self.builder, rs1, ptr);
+                self.trace_access(
+                    TraceAccess::WriteReg(data.rd as u8),
+                    LLVMBuildLoad(self.builder, raw_ptr, NONAME),
+                );
+                return Ok(());
+            }
+            riscv::OpcodeRdRs1::FmvWX => {
+                // integer (rs1) to float (rd) register, bits are not modified
+                let rs1 = self.read_reg(data.rs1);
+                // cast the float reg pointer to an integer pointer
+                let raw_ptr = self.freg_ptr(data.rd);
+                let ptr = LLVMBuildBitCast(
+                    self.builder,
+                    raw_ptr,
+                    LLVMPointerType(LLVMInt32Type(), 0),
+                    NONAME,
+                );
+                // build the actual store and add trace
+                LLVMBuildStore(self.builder, rs1, ptr);
+                self.trace_access(
+                    TraceAccess::WriteFReg(data.rd as u8),
+                    LLVMBuildLoad(self.builder, raw_ptr, NONAME),
+                );
+                return Ok(());
+            }
+            _ => (),
+        }
         Ok(())
     }
 
@@ -1787,6 +2119,51 @@ impl<'a> InstructionTranslator<'a> {
             riscv::OpcodeRdRs1Rs2::Or => LLVMBuildOr(self.builder, rs1, rs2, name),
             riscv::OpcodeRdRs1Rs2::Xor => LLVMBuildXor(self.builder, rs1, rs2, name),
             riscv::OpcodeRdRs1Rs2::Mul => LLVMBuildMul(self.builder, rs1, rs2, name),
+            riscv::OpcodeRdRs1Rs2::Mulhu => {
+                let tmp = LLVMBuildMul(
+                    self.builder,
+                    LLVMBuildZExt(self.builder, rs1, LLVMInt64Type(), NONAME),
+                    LLVMBuildZExt(self.builder, rs2, LLVMInt64Type(), NONAME),
+                    name,
+                );
+                let tmp = LLVMBuildLShr(
+                    self.builder,
+                    tmp,
+                    LLVMConstInt(LLVMInt64Type(), 32 as u64, 0),
+                    NONAME,
+                );
+                LLVMBuildTrunc(self.builder, tmp, LLVMInt32Type(), NONAME)
+            }
+            riscv::OpcodeRdRs1Rs2::Mulh => {
+                let tmp = LLVMBuildMul(
+                    self.builder,
+                    LLVMBuildSExt(self.builder, rs1, LLVMInt64Type(), NONAME),
+                    LLVMBuildSExt(self.builder, rs2, LLVMInt64Type(), NONAME),
+                    name,
+                );
+                let tmp = LLVMBuildLShr(
+                    self.builder,
+                    tmp,
+                    LLVMConstInt(LLVMInt64Type(), 32 as u64, 0),
+                    NONAME,
+                );
+                LLVMBuildTrunc(self.builder, tmp, LLVMInt32Type(), NONAME)
+            }
+            riscv::OpcodeRdRs1Rs2::Mulhsu => {
+                let tmp = LLVMBuildMul(
+                    self.builder,
+                    LLVMBuildSExt(self.builder, rs1, LLVMInt64Type(), NONAME),
+                    LLVMBuildZExt(self.builder, rs2, LLVMInt64Type(), NONAME),
+                    name,
+                );
+                let tmp = LLVMBuildLShr(
+                    self.builder,
+                    tmp,
+                    LLVMConstInt(LLVMInt64Type(), 32 as u64, 0),
+                    NONAME,
+                );
+                LLVMBuildTrunc(self.builder, tmp, LLVMInt32Type(), NONAME)
+            }
             riscv::OpcodeRdRs1Rs2::Div => LLVMBuildSDiv(self.builder, rs1, rs2, name),
             riscv::OpcodeRdRs1Rs2::Divu => LLVMBuildUDiv(self.builder, rs1, rs2, name),
             riscv::OpcodeRdRs1Rs2::Rem => LLVMBuildSRem(self.builder, rs1, rs2, name),
@@ -1806,9 +2183,10 @@ impl<'a> InstructionTranslator<'a> {
             riscv::OpcodeRdRs1Rs2::Sll => LLVMBuildShl(self.builder, rs1, rs2, name),
             riscv::OpcodeRdRs1Rs2::Srl => LLVMBuildLShr(self.builder, rs1, rs2, name),
             riscv::OpcodeRdRs1Rs2::Sra => LLVMBuildAShr(self.builder, rs1, rs2, name),
-            riscv::OpcodeRdRs1Rs2::DmStrt => self
-                .section
-                .emit_call("banshee_dma_strt", [self.dma_ptr(), rs1, rs2]),
+            riscv::OpcodeRdRs1Rs2::Dmcpy => self.section.emit_call(
+                "banshee_dma_strt",
+                [self.dma_ptr(), self.section.state_ptr, rs1, rs2],
+            ),
             _ => bail!("Unsupported opcode {}", data.op),
         };
         self.write_reg(data.rd, value);
@@ -1880,19 +2258,84 @@ impl<'a> InstructionTranslator<'a> {
         Ok(())
     }
 
+    unsafe fn emit_rs1(&self, data: riscv::FormatRs1) -> Result<()> {
+        trace!("{} x{}", data.op, data.rs1);
+        let name = format!("{}\0", data.op);
+        let _name = name.as_ptr() as *const _;
+        let rs1 = self.read_reg(data.rs1);
+
+        match data.op {
+            // suppress compiler warning that detects the bail! statement as unrechable
+            // Dmrep is currently the OpcodeRs1 but this might change
+            #![allow(unreachable_patterns)]
+            riscv::OpcodeRs1::Dmrep => self
+                .section
+                .emit_call("banshee_dma_rep", [self.dma_ptr(), rs1]),
+            _ => bail!("Unsupported opcode {}", data.op),
+        };
+        Ok(())
+    }
+
     unsafe fn emit_rs1_rs2(&self, data: riscv::FormatRs1Rs2) -> Result<()> {
         trace!("{} x{}, x{}", data.op, data.rs1, data.rs2);
         let name = format!("{}\0", data.op);
         let _name = name.as_ptr() as *const _;
         let rs1 = self.read_reg(data.rs1);
         let rs2 = self.read_reg(data.rs2);
+
+        // Perform the SSR write op
         match data.op {
-            riscv::OpcodeRs1Rs2::DmSrc => self
+            riscv::OpcodeRs1Rs2::Scfgw => {
+                // reorder rs2 to form address
+                // rs2[11:5]=reg_word rs2[4:0]=dm -> addr_off = {dm, reg_word[4:0], 000}
+                let reg = LLVMBuildLShr(
+                    self.builder,
+                    rs2,
+                    LLVMConstInt(LLVMInt32Type(), 2 as u64, 0),
+                    NONAME,
+                );
+                let reg_masked = LLVMBuildAnd(
+                    self.builder,
+                    reg,
+                    LLVMConstInt(LLVMInt32Type(), 0xf8 as u64, 0),
+                    NONAME,
+                );
+                let rs2_dm = LLVMBuildAnd(
+                    self.builder,
+                    rs2,
+                    LLVMConstInt(LLVMInt32Type(), 0x1f as u64, 0),
+                    NONAME,
+                );
+                let rs2_dm_shifted = LLVMBuildShl(
+                    self.builder,
+                    rs2_dm,
+                    LLVMConstInt(LLVMInt32Type(), 8 as u64, 0),
+                    NONAME,
+                );
+                let addr_off = LLVMBuildOr(self.builder, rs2_dm_shifted, reg_masked, NONAME);
+
+                let addr = LLVMBuildAdd(
+                    self.builder,
+                    LLVMConstInt(LLVMInt32Type(), SSR_BASE, 0),
+                    addr_off,
+                    NONAME,
+                );
+                self.write_mem(addr, rs1, 2);
+                return Ok(());
+            }
+            _ => (),
+        };
+
+        match data.op {
+            riscv::OpcodeRs1Rs2::Dmsrc => self
                 .section
                 .emit_call("banshee_dma_src", [self.dma_ptr(), rs1, rs2]),
-            riscv::OpcodeRs1Rs2::DmDst => self
+            riscv::OpcodeRs1Rs2::Dmdst => self
                 .section
                 .emit_call("banshee_dma_dst", [self.dma_ptr(), rs1, rs2]),
+            riscv::OpcodeRs1Rs2::Dmstr => self
+                .section
+                .emit_call("banshee_dma_str", [self.dma_ptr(), rs1, rs2]),
             _ => bail!("Unsupported opcode {}", data.op),
         };
         Ok(())
@@ -1903,7 +2346,21 @@ impl<'a> InstructionTranslator<'a> {
         match data.op {
             riscv::OpcodeUnit::Wfi => {
                 self.emit_trace();
-                LLVMBuildRetVoid(self.builder)
+                let terminate = self
+                    .section
+                    .emit_call("banshee_wfi", [self.section.state_ptr]);
+                let terminate = LLVMBuildIntCast(self.builder, terminate, LLVMInt1Type(), NONAME);
+                let bb_terminate =
+                    LLVMCreateBasicBlockInContext(self.section.engine.context, NONAME);
+                let bb_wake_up = LLVMCreateBasicBlockInContext(self.section.engine.context, NONAME);
+                LLVMInsertExistingBasicBlockAfterInsertBlock(self.builder, bb_terminate);
+                LLVMInsertExistingBasicBlockAfterInsertBlock(self.builder, bb_wake_up);
+                LLVMBuildCondBr(self.builder, terminate, bb_terminate, bb_wake_up);
+                // Terminate
+                LLVMPositionBuilderAtEnd(self.builder, bb_terminate);
+                LLVMBuildRetVoid(self.builder);
+                // Continue
+                LLVMPositionBuilderAtEnd(self.builder, bb_wake_up);
             }
             _ => bail!("Unsupported opcode {}", data.op),
         };
@@ -1925,15 +2382,115 @@ impl<'a> InstructionTranslator<'a> {
     /// Only emits the code once if called multiple times. Does nothing if the
     /// parent `ElfTranslator` has tracing disabled.
     unsafe fn emit_trace(&self) {
-        // Don't emit tracing twice, or if disabled, or if the current basic
-        // block has already been terminated.
+        // Don't emit tracing twice, or if the current basic block has already been terminated.
         if self.trace_emitted.get()
-            || !self.section.elf.trace
             || !LLVMGetBasicBlockTerminator(LLVMGetInsertBlock(self.builder)).is_null()
         {
             return;
         }
         self.trace_emitted.set(true);
+
+        // Track the cycle counter if enabled
+        if self.section.elf.latency {
+            // Check for read dependencies
+            let accesses = self.trace_accesses.borrow();
+
+            let mut cycles = Vec::new();
+            for &(access, _data) in accesses.iter().take(TRACE_BUFFER_LEN as usize) {
+                let cycle = match access {
+                    TraceAccess::ReadReg(i) => LLVMBuildLoad(
+                        self.builder,
+                        self.reg_cycle_ptr(i as u32),
+                        format!("x{}\0", i).as_ptr() as *const _,
+                    ),
+                    TraceAccess::ReadFReg(i) => LLVMBuildLoad(
+                        self.builder,
+                        self.freg_cycle_ptr(i as u32),
+                        format!("f{}\0", i).as_ptr() as *const _,
+                    ),
+                    _ => continue,
+                };
+                cycles.push(cycle);
+            }
+
+            // Load the current cycle counter.
+            let mut max_cycle = LLVMBuildLoad(self.builder, self.cycle_ptr(), NONAME);
+            // Instruction takes at least one cycle even if all dependencies are ready
+            max_cycle = LLVMBuildAdd(
+                self.builder,
+                max_cycle,
+                LLVMConstInt(LLVMTypeOf(max_cycle), 1, 0),
+                NONAME,
+            );
+
+            // Calculate the maximum
+            for c in cycles {
+                let is_umax = LLVMBuildICmp(self.builder, LLVMIntUGT, max_cycle, c, NONAME);
+                max_cycle = LLVMBuildSelect(self.builder, is_umax, max_cycle, c, NONAME);
+            }
+
+            // Store the cycle at which all dependencies are ready and the inst is executed
+            LLVMBuildStore(self.builder, max_cycle, self.cycle_ptr());
+
+            // Check if instruction is a memory access
+            let mem_access = accesses.iter().find(|(a, _)| match a {
+                TraceAccess::ReadMem => true,
+                TraceAccess::RMWMem => true,
+                _ => false,
+            });
+
+            // Get the instruction mnemonic (generated by riscv-opcodes)
+            let inst_name = riscv::inst_to_string(self.inst);
+
+            let latency = if let Some(access) = mem_access {
+                // Check config
+                let (is_tcdm, _tcdm_ptr) = self.emit_tcdm_check(access.1);
+                LLVMBuildSelect(
+                    self.builder,
+                    is_tcdm,
+                    LLVMConstInt(
+                        LLVMTypeOf(max_cycle),
+                        self.section.engine.config.memory.tcdm.latency,
+                        0,
+                    ),
+                    LLVMConstInt(
+                        LLVMTypeOf(max_cycle),
+                        self.section.engine.config.memory.dram.latency,
+                        0,
+                    ),
+                    NONAME,
+                )
+            } else {
+                // Get instruction's latency or use default of one cycle
+                LLVMConstInt(
+                    LLVMTypeOf(max_cycle),
+                    self.get_latency(inst_name, 1) as u64,
+                    0,
+                )
+            };
+
+            // Add latency of this instruction
+            let cycle = LLVMBuildAdd(self.builder, max_cycle, latency, NONAME);
+
+            // Write new dependencies
+            for &(access, _data) in accesses.iter().take(TRACE_BUFFER_LEN as usize) {
+                match access {
+                    // ReadMem => random latency,
+                    TraceAccess::WriteReg(i) => {
+                        LLVMBuildStore(self.builder, cycle, self.reg_cycle_ptr(i as u32))
+                    }
+                    TraceAccess::WriteFReg(i) => {
+                        LLVMBuildStore(self.builder, cycle, self.freg_cycle_ptr(i as u32))
+                    }
+                    _ => continue,
+                };
+            }
+        }
+
+        // Don't emit tracing if disabled
+        if !self.section.elf.trace {
+            return;
+        }
 
         // Compose a list of accesses.
         let accesses = self.trace_accesses.borrow();
@@ -2278,8 +2835,12 @@ impl<'a> InstructionTranslator<'a> {
         &self,
         addr: LLVMValueRef,
     ) -> (LLVMValueRef, LLVMValueRef, LLVMValueRef) {
-        let ssr_start = LLVMConstInt(LLVMInt32Type(), 0x204800, 0);
-        let ssr_end = LLVMConstInt(LLVMInt32Type(), 0x204800 + 32 * 8 * 2, 0);
+        let ssr_start = LLVMConstInt(LLVMInt32Type(), SSR_BASE, 0);
+        let ssr_end = LLVMConstInt(
+            LLVMInt32Type(),
+            SSR_BASE + 32 * 8 * SSR_N_STREAMERS as u64,
+            0,
+        );
         let ssr_size = LLVMConstInt(LLVMInt32Type(), 32 * 8, 0);
         let in_range = LLVMBuildAnd(
             self.builder,
@@ -2504,6 +3065,18 @@ impl<'a> InstructionTranslator<'a> {
         )
     }
 
+    unsafe fn reg_cycle_ptr(&self, r: u32) -> LLVMValueRef {
+        assert!(r < 32);
+        self.section.emit_call_with_name(
+            "banshee_reg_cycle_ptr",
+            [
+                self.section.state_ptr,
+                LLVMConstInt(LLVMInt32Type(), r as u64, 0),
+            ],
+            &format!("ptr_x{}", r),
+        )
+    }
+
     unsafe fn freg_ptr(&self, r: u32) -> LLVMValueRef {
         assert!(r < 32);
         self.section.emit_call_with_name(
@@ -2516,9 +3089,26 @@ impl<'a> InstructionTranslator<'a> {
         )
     }
 
+    unsafe fn freg_cycle_ptr(&self, r: u32) -> LLVMValueRef {
+        assert!(r < 32);
+        self.section.emit_call_with_name(
+            "banshee_freg_cycle_ptr",
+            [
+                self.section.state_ptr,
+                LLVMConstInt(LLVMInt32Type(), r as u64, 0),
+            ],
+            &format!("ptr_f{}", r),
+        )
+    }
+
     unsafe fn pc_ptr(&self) -> LLVMValueRef {
         self.section
             .emit_call_with_name("banshee_pc_ptr", [self.section.state_ptr], "ptr_pc")
+    }
+
+    unsafe fn cycle_ptr(&self) -> LLVMValueRef {
+        self.section
+            .emit_call_with_name("banshee_cycle_ptr", [self.section.state_ptr], "ptr_cycle")
     }
 
     unsafe fn instret_ptr(&self) -> LLVMValueRef {
@@ -2535,7 +3125,7 @@ impl<'a> InstructionTranslator<'a> {
     }
 
     unsafe fn ssr_ptr(&self, ssr: u32) -> LLVMValueRef {
-        assert!(ssr < 2);
+        assert!(ssr < SSR_N_STREAMERS);
         self.ssr_dyn_ptr(LLVMConstInt(LLVMInt32Type(), ssr as u64, 0))
     }
 
@@ -2558,5 +3148,15 @@ impl<'a> InstructionTranslator<'a> {
     unsafe fn dma_ptr(&self) -> LLVMValueRef {
         self.section
             .emit_call_with_name("banshee_dma_ptr", [self.section.state_ptr], "ptr_dma")
+    }
+
+    /// Extract latency from the config file or assign default value
+    unsafe fn get_latency(&self, op: String, default_value: u64) -> u64 {
+        let latency = &self.section.engine.config.inst_latency.get(&op);
+        if let Some(&val) = latency {
+            val
+        } else {
+            default_value
+        }
     }
 }

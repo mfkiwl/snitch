@@ -6,6 +6,7 @@
 // Description: Top-Level of Snitch Integer Core RV32E
 
 `include "common_cells/registers.svh"
+`include "common_cells/assertions.svh"
 
 // `SNITCH_ENABLE_PERF Enables mcycle, minstret performance counters (read only)
 
@@ -1748,7 +1749,8 @@ module snitch import snitch_pkg::*; import riscv_instr::*; #(
         end
       end
       // FP Sequencer
-      FREP: begin
+      FREP_O,
+      FREP_I: begin
         if (FP_EN) begin
           opa_select = Reg;
           write_rd = 1'b0;
@@ -2588,5 +2590,15 @@ module snitch import snitch_pkg::*; import riscv_instr::*; #(
     BGE,
     BGEU
   }) && (consec_pc[1:0] != 2'b0);
+
+  // ----------
+  // Assertions
+  // ----------
+  // Make sure the instruction interface is stable. Otherwise, Snitch might violate the protocol at
+  // the LSU or accelerator interface by withdrawing the valid signal.
+  // TODO: Remove cacheability attribute, that should hold true for all instruction fetch transacitons.
+  `ASSERT(InstructionInterfaceStable,
+      (inst_valid_o && inst_ready_i && inst_cacheable_o) ##1 (inst_valid_o && $stable(inst_addr_o))
+      |-> inst_ready_i && $stable(inst_data_i), clk_i, rst_i)
 
 endmodule

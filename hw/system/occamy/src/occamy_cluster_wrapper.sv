@@ -63,7 +63,7 @@ package occamy_cluster_pkg;
   localparam snitch_pma_pkg::snitch_pma_t SnitchPMACfg = '{
       NrCachedRegionRules: 1,
       CachedRegion: '{
-          '{base: 48'h0, mask: 48'h0}
+          '{base: 48'h80000000, mask: 48'h80000000}
       },
       default: 0
   };
@@ -111,10 +111,10 @@ module occamy_cluster_wrapper (
 );
 
   localparam int unsigned NumIntOutstandingLoads [9] = '{1, 1, 1, 1, 1, 1, 1, 1, 1};
-  localparam int unsigned NumIntOutstandingMem [9] = '{1, 4, 4, 4, 4, 4, 4, 4, 4};
+  localparam int unsigned NumIntOutstandingMem [9] = '{4, 4, 4, 4, 4, 4, 4, 4, 1};
   localparam int unsigned NumFPOutstandingLoads [9] = '{4, 4, 4, 4, 4, 4, 4, 4, 4};
-  localparam int unsigned NumFPOutstandingMem [9] = '{1, 4, 4, 4, 4, 4, 4, 4, 4};
-  localparam int unsigned NumDTLBEntries [9] = '{2, 1, 1, 1, 1, 1, 1, 1, 1};
+  localparam int unsigned NumFPOutstandingMem [9] = '{4, 4, 4, 4, 4, 4, 4, 4, 1};
+  localparam int unsigned NumDTLBEntries [9] = '{1, 1, 1, 1, 1, 1, 1, 1, 2};
   localparam int unsigned NumITLBEntries [9] = '{1, 1, 1, 1, 1, 1, 1, 1, 1};
   localparam int unsigned SSRNrCredits [9] = '{4, 4, 4, 4, 4, 4, 4, 4, 4};
   localparam int unsigned NumSequencerInstr [9] = '{16, 16, 16, 16, 16, 16, 16, 16, 16};
@@ -127,7 +127,7 @@ module occamy_cluster_wrapper (
     .NarrowIdWidthIn (occamy_cluster_pkg::NarrowIdWidthIn),
     .WideIdWidthIn (occamy_cluster_pkg::WideIdWidthIn),
     .UserWidth (occamy_cluster_pkg::UserWidth),
-    .BootAddr (32'h1000),
+    .BootAddr (32'h1000000),
     .narrow_in_req_t (occamy_cluster_pkg::narrow_in_req_t),
     .narrow_in_resp_t (occamy_cluster_pkg::narrow_in_resp_t),
     .narrow_out_req_t (occamy_cluster_pkg::narrow_out_req_t),
@@ -173,9 +173,9 @@ module occamy_cluster_wrapper (
     .RegisterCoreReq (1),
     .RegisterCoreRsp (1),
     .RegisterTCDMCuts (0),
-    .RegisterExtWide (0),
-    .RegisterExtNarrow (0),
-    .RegisterFPUReq (0),
+    .RegisterExtWide (1),
+    .RegisterExtNarrow (1),
+    .RegisterFPUReq (1),
     .RegisterSequencer (0),
     .IsoCrossing (0),
     .NarrowXbarLatency (axi_pkg::CUT_ALL_PORTS),

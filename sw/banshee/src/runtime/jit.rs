@@ -24,6 +24,13 @@ pub unsafe fn banshee_reg_ptr<'a>(cpu: &'a mut Cpu, reg: u32) -> &'a mut u32 {
     cpu.state.regs.get_unchecked_mut(reg as usize)
 }
 
+/// Get a pointer to a register's cycle.
+#[no_mangle]
+#[inline(always)]
+pub unsafe fn banshee_reg_cycle_ptr<'a>(cpu: &'a mut Cpu, reg: u32) -> &'a mut u64 {
+    cpu.state.regs_cycle.get_unchecked_mut(reg as usize)
+}
+
 /// Get a pointer to a float register.
 #[no_mangle]
 #[inline(always)]
@@ -31,11 +38,25 @@ pub unsafe fn banshee_freg_ptr<'a>(cpu: &'a mut Cpu, reg: u32) -> &'a mut u64 {
     cpu.state.fregs.get_unchecked_mut(reg as usize)
 }
 
+/// Get a pointer to a float register.
+#[no_mangle]
+#[inline(always)]
+pub unsafe fn banshee_freg_cycle_ptr<'a>(cpu: &'a mut Cpu, reg: u32) -> &'a mut u64 {
+    cpu.state.fregs_cycle.get_unchecked_mut(reg as usize)
+}
+
 /// Get a pointer to the program counter register.
 #[no_mangle]
 #[inline(always)]
 pub unsafe fn banshee_pc_ptr<'a>(cpu: &'a mut Cpu) -> &'a mut u32 {
     &mut cpu.state.pc
+}
+
+/// Get a pointer to the cycle counter.
+#[no_mangle]
+#[inline(always)]
+pub unsafe fn banshee_cycle_ptr<'a>(cpu: &'a mut Cpu) -> &'a mut u64 {
+    &mut cpu.state.cycle
 }
 
 /// Get a pointer to the instret counter.
@@ -80,7 +101,7 @@ pub unsafe fn banshee_ssr_write_cfg(ssr: &mut SsrState, addr: u32, value: u32, m
     let addr = addr as usize / 8;
     match addr {
         0 => {
-            ssr.ptr = value & ((1 << 28) - 1);
+            ssr.ptr_next = value & ((1 << 28) - 1);
             ssr.done = ((value >> 31) & 1) != 0;
             ssr.write = ((value >> 30) & 1) != 0;
             ssr.dims = ((value >> 28) & 3) as u8;
@@ -89,13 +110,13 @@ pub unsafe fn banshee_ssr_write_cfg(ssr: &mut SsrState, addr: u32, value: u32, m
         2..=5 => *ssr.bound.get_unchecked_mut(addr - 2) = value,
         6..=9 => *ssr.stride.get_unchecked_mut(addr - 6) = value,
         24..=27 => {
-            ssr.ptr = value;
+            ssr.ptr_next = value;
             ssr.done = false;
             ssr.write = false;
             ssr.dims = (addr - 24) as u8;
         }
         28..=31 => {
-            ssr.ptr = value;
+            ssr.ptr_next = value;
             ssr.done = false;
             ssr.write = true;
             ssr.dims = (addr - 28) as u8;
@@ -124,25 +145,39 @@ pub unsafe fn banshee_ssr_read_cfg(ssr: &mut SsrState, addr: u32) -> u32 {
 pub unsafe fn banshee_ssr_next(ssr: &mut SsrState) -> u32 {
     // TODO: Assert that the SSR is not done.
     let ptr = ssr.ptr;
-    if ssr.repeat_count == ssr.repeat_bound {
-        ssr.repeat_count = 0;
-        let mut stride = 0;
-        ssr.done = true;
-        for i in 0..=(ssr.dims as usize) {
-            stride = *ssr.stride.get_unchecked(i);
-            if *ssr.index.get_unchecked(i) == *ssr.bound.get_unchecked(i) {
-                *ssr.index.get_unchecked_mut(i) = 0;
-            } else {
-                *ssr.index.get_unchecked_mut(i) += 1;
-                ssr.done = false;
-                break;
+    // execute increment only, if SSR register has not been previously
+    // accessed. The ssr.accessed flag is cleared after an instruction
+    // is retired. This prohibits that an instruction using ftX multiple
+    // times (e.g. fmul.d ft3, ft0, ft0) from being served different values
+    if !ssr.accessed {
+        if ssr.repeat_count == ssr.repeat_bound {
+            ssr.repeat_count = 0;
+            let mut stride = 0;
+            ssr.done = true;
+            for i in 0..=(ssr.dims as usize) {
+                stride = *ssr.stride.get_unchecked(i);
+                if *ssr.index.get_unchecked(i) == *ssr.bound.get_unchecked(i) {
+                    *ssr.index.get_unchecked_mut(i) = 0;
+                } else {
+                    *ssr.index.get_unchecked_mut(i) += 1;
+                    ssr.done = false;
+                    break;
+                }
             }
+            ssr.ptr_next = ssr.ptr.wrapping_add(stride);
+        } else {
+            ssr.repeat_count += 1;
         }
-        ssr.ptr = ssr.ptr.wrapping_add(stride);
-    } else {
-        ssr.repeat_count += 1;
     }
+    ssr.accessed = true;
     ptr
+}
+
+/// Deassert the accessed flag at the end of instruction parsing
+#[no_mangle]
+pub unsafe fn banshee_ssr_eoi(ssr: &mut SsrState) {
+    ssr.accessed = false;
+    ssr.ptr = ssr.ptr_next;
 }
 
 /// Implementation of the `dm.src` instruction.
@@ -157,6 +192,19 @@ pub unsafe fn banshee_dma_dst(dma: &mut DmaState, lo: u32, hi: u32) {
     dma.dst = (hi as u64) << 32 | (lo as u64);
 }
 
+/// Implementation of the `dm.str` instruction.
+#[no_mangle]
+pub unsafe fn banshee_dma_str(dma: &mut DmaState, src: u32, dst: u32) {
+    dma.src_stride = src;
+    dma.dst_stride = dst;
+}
+
+/// Implementation of the `dm.rep` instruction.
+#[no_mangle]
+pub unsafe fn banshee_dma_rep(dma: &mut DmaState, reps: u32) {
+    dma.reps = reps;
+}
+
 /// Implementation of the `dm.strt` and `dm.strti` instructions.
 #[no_mangle]
 pub unsafe fn banshee_dma_strt(dma: &mut DmaState, cpu: &mut Cpu, size: u32, flags: u32) -> u32 {
@@ -167,6 +215,7 @@ pub unsafe fn banshee_dma_strt(dma: &mut DmaState, cpu: &mut Cpu, size: u32, fla
 
     let id = dma.done_id;
     dma.done_id += 1;
+    dma.size = size;
 
     // assert_eq!(
     //     size % 4,

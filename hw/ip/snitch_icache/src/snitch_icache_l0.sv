@@ -194,6 +194,10 @@ module snitch_icache_l0 import snitch_icache_pkg::*; #(
     if (evict_req) begin
       evict_strb = 1 << cnt_q;
       cnt_d = cnt_q + 1;
+      if (evict_strb == hit_early) begin
+        evict_strb = 1 << cnt_d;
+        cnt_d = cnt_q + 2;
+      end
     end
   end
 
@@ -269,7 +273,7 @@ module snitch_icache_l0 import snitch_icache_pkg::*; #(
   // pre-fetched the line yet and there is no other refill in progress.
   assign prefetcher_out.vld = enable_prefetching_i &
                               hit_any & ~hit_prefetch_any &
-                              ~pending_refill_q;
+                              hit_early_is_onehot & ~pending_refill_q;
 
   localparam int unsigned FetchPkts = CFG.LINE_WIDTH/32;
   logic [FetchPkts-1:0] is_branch_taken;

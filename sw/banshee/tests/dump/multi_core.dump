@@ -10,7 +10,11 @@ Disassembly of section .text:
 80010008:	20000337          	lui	t1,0x20000
 8001000c:	006282b3          	add	t0,t0,t1
 80010010:	00a2a023          	sw	a0,0(t0)
-80010014:	10500073          	wfi
+80010014:	bfff0297          	auipc	t0,0xbfff0
+80010018:	00c28293          	addi	t0,t0,12 # 40000020 <scratch_reg>
+8001001c:	00100313          	li	t1,1
+80010020:	0062a023          	sw	t1,0(t0)
+80010024:	10500073          	wfi
 
 Disassembly of section .riscv.attributes:
 

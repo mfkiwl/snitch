@@ -4,7 +4,7 @@
 
 //! Engine for dynamic binary translation and execution
 
-use crate::{riscv, tran::ElfTranslator, util::SiUnit};
+use crate::{riscv, tran::ElfTranslator, util::SiUnit, Configuration};
 use anyhow::{anyhow, bail, Result};
 use itertools::Itertools;
 use llvm_sys::{
@@ -14,7 +14,7 @@ use llvm_sys::{
 use std::{
     collections::HashMap,
     sync::{
-        atomic::{AtomicBool, AtomicU32, AtomicUsize, Ordering},
+        atomic::{AtomicBool, AtomicU32, AtomicU64, AtomicUsize, Ordering},
         Mutex,
     },
 };
@@ -37,12 +37,17 @@ pub struct Engine {
     pub opt_jit: bool,
     /// Enable instruction tracing.
     pub trace: bool,
+    /// Enable instruction latency.
+    pub latency: bool,
     /// The base hartid.
     pub base_hartid: usize,
     /// The number of cores.
     pub num_cores: usize,
     /// The number of clusters.
     pub num_clusters: usize,
+    /// The system configuration.
+    pub config: Configuration,
+    // pub config: Configuration,
     /// The global memory.
     pub memory: Mutex<HashMap<u64, u32>>,
     /// The per-core putchar buffers (per hartid).
@@ -95,9 +100,11 @@ impl Engine {
             opt_llvm: true,
             opt_jit: true,
             trace: false,
+            latency: false,
             base_hartid: 0,
             num_cores: 1,
             num_clusters: 1,
+            config: Default::default(),
             memory: Default::default(),
             putchar_buffer: Default::default(),
         }
@@ -302,9 +309,15 @@ impl Engine {
 
         // Allocate some TCDM memories.
         let tcdms: Vec<_> = {
-            let mut tcdm = vec![0u32; 128 * 1024 / 4];
+            let mut tcdm = vec![
+                0u32;
+                ((self.config.memory.tcdm.end - self.config.memory.tcdm.start) / 4)
+                    as usize
+            ];
             for (&addr, &value) in self.memory.lock().unwrap().iter() {
-                if addr < 0x020000 {
+                if (addr as u32) >= self.config.memory.tcdm.start
+                    && (addr as u32) < self.config.memory.tcdm.end
+                {
                     tcdm[(addr / 4) as usize] = value;
                 }
             }
@@ -314,6 +327,12 @@ impl Engine {
         // Allocate some barriers.
         let barriers: Vec<_> = (0..self.num_clusters)
             .map(|_| AtomicUsize::new(0))
+            .collect();
+
+        // Allocate global variables to keep track of sleeping cores.
+        let num_sleep = AtomicUsize::new(0);
+        let wake_up: Vec<_> = (0..self.num_clusters * self.num_cores)
+            .map(|_| AtomicU64::new(0))
             .collect();
 
         // Create the CPUs.
@@ -329,6 +348,8 @@ impl Engine {
                     base_hartid,
                     j,
                     &barriers[j],
+                    &num_sleep,
+                    &wake_up,
                 )
             })
             .collect();
@@ -359,10 +380,13 @@ impl Engine {
 
         // Print some final statistics.
         trace!("Final state hart {}: {:#?}", cpus[0].hartid, cpus[0].state);
-        info!(
-            "Exit code is 0x{:x}",
-            self.exit_code.load(Ordering::SeqCst) >> 1
-        );
+        // Fetch the return value {ret[31:1] = exit_code, ret[0] = exit_code_valid}
+        let ret = self.exit_code.load(Ordering::SeqCst);
+        if (ret & 0x1) == 0x1 {
+            info!("Exit code is 0x{:x}", ret >> 1);
+        } else {
+            warn!("Exit code register was empty.")
+        }
         info!(
             "Retired {} ({}) in {}, {}",
             instret,
@@ -372,8 +396,11 @@ impl Engine {
         );
         if self.had_error.load(Ordering::SeqCst) {
             Err(anyhow!("Encountered an error during execution"))
+        } else if (ret & 0x1) != 0x1 {
+            // Call the police if no return value was specified
+            Ok(117)
         } else {
-            Ok(self.exit_code.load(Ordering::SeqCst) >> 1)
+            Ok(ret >> 1)
         }
     }
 }
@@ -415,6 +442,10 @@ pub unsafe fn add_llvm_symbols() {
         b"banshee_trace\0".as_ptr() as *const _,
         Cpu::binary_trace as *mut _,
     );
+    LLVMAddSymbol(
+        b"banshee_wfi\0".as_ptr() as *const _,
+        Cpu::binary_wfi as *mut _,
+    );
 }
 
 // /// A representation of the system state.
@@ -431,6 +462,8 @@ impl<'a, 'b> Cpu<'a, 'b> {
         cluster_base_hartid: usize,
         cluster_id: usize,
         barrier: &'b AtomicUsize,
+        num_sleep: &'b AtomicUsize,
+        wake_up: &'b Vec<AtomicU64>,
     ) -> Self {
         Self {
             engine,
@@ -441,22 +474,28 @@ impl<'a, 'b> Cpu<'a, 'b> {
             cluster_base_hartid,
             cluster_id,
             barrier,
+            num_sleep,
+            wake_up,
         }
     }
 
     fn binary_load(&self, addr: u32, size: u8) -> u32 {
         match addr {
-            0x40000000 => 0x000000,                                     // tcdm_start
-            0x40000008 => 0x020000,                                     // tcdm_end
-            0x40000010 => self.num_cores as u32,                        // nr_cores
-            0x40000020 => self.engine.exit_code.load(Ordering::SeqCst), // scratch_reg
-            0x40000038 => {
+            x if x == self.engine.config.address.tcdm_start => self.engine.config.memory.tcdm.start, // tcdm_start
+            x if x == self.engine.config.address.tcdm_end => self.engine.config.memory.tcdm.end, // tcdm_end
+            x if x == self.engine.config.address.nr_cores => self.num_cores as u32, // nr_cores
+            x if x == self.engine.config.address.scratch_reg => {
+                self.engine.exit_code.load(Ordering::SeqCst)
+            } // scratch_reg
+            x if x == self.engine.config.address.barrier_reg => {
                 self.cluster_barrier();
                 0
             } // barrier_reg
-            0x40000040 => self.cluster_base_hartid as u32,              // cluster_base_hartid
-            0x40000048 => self.engine.num_clusters as u32,              // cluster_num
-            0x40000050 => self.cluster_id as u32,                       // cluster_id
+            x if x == self.engine.config.address.cluster_base_hartid => {
+                self.cluster_base_hartid as u32
+            } // cluster_base_hartid
+            x if x == self.engine.config.address.cluster_num => self.engine.num_clusters as u32, // cluster_num
+            x if x == self.engine.config.address.cluster_id => self.cluster_id as u32, // cluster_id
             _ => {
                 trace!("Load 0x{:x} ({}B)", addr, 8 << size);
                 self.engine
@@ -472,15 +511,31 @@ impl<'a, 'b> Cpu<'a, 'b> {
 
     fn binary_store(&self, addr: u32, value: u32, mask: u32, size: u8) {
         match addr {
-            0x40000000 => (),                                                   // tcdm_start
-            0x40000008 => (),                                                   // tcdm_end
-            0x40000010 => (),                                                   // nr_cores
-            0x40000020 => self.engine.exit_code.store(value, Ordering::SeqCst), // scratch_reg
-            0x40000038 => (),                                                   // barrier_reg
-            0x40000040 => (), // cluster_base_hartid
-            0x40000048 => (), // cluster_num
-            0x40000050 => (), // cluster_id
-            0xF00B8000 => {
+            x if x == self.engine.config.address.tcdm_start => (), // tcdm_start
+            x if x == self.engine.config.address.tcdm_end => (),   // tcdm_end
+            x if x == self.engine.config.address.nr_cores => (),   // nr_cores
+            x if x == self.engine.config.address.scratch_reg => {
+                self.engine.exit_code.store(value, Ordering::SeqCst)
+            } // scratch_reg
+            x if x == self.engine.config.address.wakeup_reg => {
+                // wake_up
+                if value as i32 == -1 {
+                    self.num_sleep
+                        .fetch_sub(self.wake_up.len(), Ordering::Relaxed);
+                    for x in self.wake_up {
+                        x.fetch_max(self.state.cycle + 1, Ordering::Release);
+                    }
+                } else if (value as usize) < self.wake_up.len() {
+                    self.num_sleep.fetch_sub(1, Ordering::Relaxed);
+                    self.wake_up[value as usize - self.engine.base_hartid]
+                        .fetch_max(self.state.cycle + 1, Ordering::Release);
+                }
+            } // wakeup_reg
+            x if x == self.engine.config.address.barrier_reg => (), // barrier_reg
+            x if x == self.engine.config.address.cluster_base_hartid => (), // cluster_base_hartid
+            x if x == self.engine.config.address.cluster_num => (), // cluster_num
+            x if x == self.engine.config.address.cluster_id => (), // cluster_id
+            x if x == self.engine.config.address.uart => {
                 let mut buffer = self.engine.putchar_buffer.lock().unwrap();
                 let buffer = buffer.entry(self.hartid).or_default();
                 if value == '\n' as u32 {
@@ -530,7 +585,11 @@ impl<'a, 'b> Cpu<'a, 'b> {
         trace!("Read CSR 0x{:x}", csr);
         match csr {
             0x7C0 => self.state.ssr_enable,
-            0xF14 => self.hartid as u32, // mhartid
+            0xB00 => self.state.cycle as u32,         // csr_mcycle
+            0xB80 => (self.state.cycle >> 32) as u32, // csr_mcycleh
+            0xB02 => self.state.instret as u32,       // csr_minstret
+            0xB82 => (self.state.instret >> 32) as u32, // csr_minstreth
+            0xF14 => self.hartid as u32,              // mhartid
             _ => 0,
         }
     }
@@ -581,10 +640,31 @@ impl<'a, 'b> Cpu<'a, 'b> {
 
         // Assemble the trace line.
         let line = format!(
-            "{:08} {:04} {:08x}  {:38}  # DASM({:08x})",
-            self.state.instret, self.hartid, addr, args, inst
+            "{:08} {:08} {:04} {:08x}  {:38}  # DASM({:08x})",
+            self.state.cycle, self.state.instret, self.hartid, addr, args, inst
         );
         println!("{}", line);
+    }
+
+    fn binary_wfi(&mut self) -> u32 {
+        // Set own wfi.
+        self.state.wfi = true;
+        self.num_sleep.fetch_add(1, Ordering::Release);
+        // Wait for the wake up call
+        let hartid = self.hartid - self.engine.base_hartid;
+        while self.wake_up[hartid].load(Ordering::Relaxed) == 0 {
+            // Check if everyone is sleeping
+            if self.num_sleep.load(Ordering::Relaxed) == self.wake_up.len() {
+                return 1;
+            }
+            std::thread::yield_now();
+        }
+        // Someone woke us up --> Clear the flag
+        let cycle = self.wake_up[hartid].swap(0, Ordering::Relaxed);
+        self.state.cycle = std::cmp::max(self.state.cycle, cycle as u64);
+        self.state.wfi = false;
+        // The core waking us up, already decremented the `num_sleep` counter for us
+        return 0;
     }
 
     /// A simple barrier across all cores in the cluster.

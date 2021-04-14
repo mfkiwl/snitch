@@ -73,9 +73,11 @@ impl std::fmt::Debug for CpuState {
             .field("regs", &format_args!("\n{}", regs))
             .field("fregs", &format_args!("\n{}", fregs))
             .field("pc", &format_args!("0x{:x}", self.pc))
+            .field("cycle", &self.cycle)
             .field("instret", &self.instret)
             .field("ssrs", &self.ssrs)
             .field("dma", &self.dma)
+            .field("wfi", &self.wfi)
             .finish()
     }
 }
@@ -87,6 +89,7 @@ impl std::fmt::Debug for SsrState {
             .field("bound", &format_args!("{:?}", self.bound))
             .field("stride", &format_args!("{:08x?}", self.stride))
             .field("ptr", &format_args!("{:08x}", self.ptr))
+            .field("ptr_next", &format_args!("{:08x}", self.ptr_next))
             .field(
                 "repeat",
                 &format_args!("{} of {}", self.repeat_count, self.repeat_bound),
@@ -98,6 +101,7 @@ impl std::fmt::Debug for SsrState {
                     self.done, self.write, self.dims
                 ),
             )
+            .field("accessed", &format_args!("{}", self.accessed))
             .finish()
     }
 }
@@ -107,6 +111,10 @@ impl std::fmt::Debug for DmaState {
         f.debug_struct("DmaState")
             .field("src", &format_args!("{:08x}", self.src))
             .field("dst", &format_args!("{:08x}", self.dst))
+            .field("src stride", &format_args!("{:08x}", self.src_stride))
+            .field("dst stride", &format_args!("{:08x}", self.dst_stride))
+            .field("reps", &self.reps)
+            .field("size", &self.size)
             .field("done_id", &self.done_id)
             .finish()
     }

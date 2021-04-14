@@ -3,29 +3,13 @@
 # SPDX-License-Identifier: Apache-2.0
 
 SHELL := /bin/bash
-RISCV_OPCODES ?= ../../sw/vendor/riscv-opcodes
-PARSE_OPCODES ?= $(RISCV_OPCODES)/parse-opcodes
-OPCODES := opcodes opcodes-rep opcodes-dma
-OPCODES_PATH := $(patsubst %,$(RISCV_OPCODES)/%,$(OPCODES))
-
-all:: src/riscv.rs
-.PHONY: all
-
-src/riscv.rs: $(OPCODES_PATH) $(PARSE_OPCODES)
-	echo "// Copyright 2020 ETH Zurich and University of Bologna." > $@
-	echo "// Licensed under the Apache License, Version 2.0, see LICENSE for details." >> $@
-	echo "// SPDX-License-Identifier: Apache-2.0" >> $@
-	echo >> $@
-	cat $(OPCODES_PATH) | $(PARSE_OPCODES) -rust >> $@
-	rustfmt $@
-
 
 ###########################
 ###  INTEGRATION TESTS  ###
 ###########################
 
 TESTS_DIR ?= tests/bin
-TESTS_BLACKLIST += dma_simple frep_multiple matmul_ssr_frep
+TESTS_BLACKLIST += dma_simple matmul_ssr_frep
 TESTS += $(patsubst $(TESTS_DIR)/%,%,$(wildcard $(TESTS_DIR)/*))
 TEST_TARGETS = $(patsubst %,test-%,$(TESTS))
 LOG_FAILED ?= /tmp/banshee_tests_failed
@@ -33,6 +17,8 @@ LOG_TOTAL ?= /tmp/banshee_tests_total
 
 TARGET_DIR ?= $(shell cargo metadata --format-version 1 | sed -n 's/.*"target_directory":"\([^"]*\)".*/\1/p')
 BANSHEE ?= $(TARGET_DIR)/debug/banshee
+
+SNITCH_LOG ?= info
 
 test: test-info $(TEST_TARGETS)
 	@echo
@@ -62,14 +48,15 @@ define test_template
 	(cat $$ARGS 2>/dev/null || echo) | while read ARG; do \
 		CMD=`echo $(2) $(3) $(4) $$ARG`; \
 		LOGFILE=`mktemp`; \
+		echo -n "$$CMD ... "; \
 		if [ ! -z $(filter $(1),$(TESTS_BLACKLIST)) ]; then \
-			echo "$$CMD ... `tput setaf 3`ignored`tput sgr0`"; \
-		elif ! env SNITCH_LOG=debug $$CMD &> $$LOGFILE; then \
-			echo "$$CMD ... `tput setaf 1`FAILED`tput sgr0`"; \
+			echo "`tput setaf 3`ignored`tput sgr0`"; \
+		elif ! env SNITCH_LOG=$(SNITCH_LOG) $$CMD &> $$LOGFILE; then \
+			echo "`tput setaf 1`FAILED`tput sgr0`"; \
 			cat $$LOGFILE; \
 			echo $$CMD >>$(LOG_FAILED); \
 		else \
-			echo "$$CMD ... `tput setaf 2`passed`tput sgr0`"; \
+			echo "`tput setaf 2`passed`tput sgr0`"; \
 		fi; \
 		echo $$CMD >>$(LOG_TOTAL); \
 	done
