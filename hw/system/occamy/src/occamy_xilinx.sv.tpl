@@ -11,45 +11,57 @@
 module occamy_xilinx
 import occamy_pkg::*;
 (
-  input  logic             clk_i,
-  input  logic             rst_ni,
-  input  logic             test_mode_i,
-  input  logic [ 1:0]      chip_id_i,
-  input  logic [ 1:0]      boot_mode_i,
+  input  logic        clk_i,
+  input  logic        rst_ni,
+  /// Peripheral clock
+  input  logic        clk_periph_i,
+  input  logic        rst_periph_ni,
+  /// Real-time clock (for time keeping)
+  input  logic        rtc_i,
+  input  logic        test_mode_i,
+  input  logic [1:0]  chip_id_i,
+  input  logic [1:0]  boot_mode_i,
   // pad cfg
   output logic [31:0]      pad_slw_o,
   output logic [31:0]      pad_smt_o,
   output logic [31:0][1:0] pad_drv_o,
   // `uart` Interface
-  output logic             uart_tx_o,
-  input  logic             uart_rx_i,
+  output logic        uart_tx_o,
+  input  logic        uart_rx_i,
   // `gpio` Interface
-  input  logic [31:0]      gpio_d_i,
-  output logic [31:0]      gpio_d_o,
-  output logic [31:0]      gpio_oe_o,
-  output logic [31:0]      gpio_puen_o,
-  output logic [31:0]      gpio_pden_o,
+  input  logic [31:0] gpio_d_i,
+  output logic [31:0] gpio_d_o,
+  output logic [31:0] gpio_oe_o,
+  output logic [31:0] gpio_puen_o,
+  output logic [31:0] gpio_pden_o,
   // `jtag` Interface
-  input  logic             jtag_trst_ni,
-  input  logic             jtag_tck_i,
-  input  logic             jtag_tms_i,
-  input  logic             jtag_tdi_i,
-  output logic             jtag_tdo_o,
+  input  logic        jtag_trst_ni,
+  input  logic        jtag_tck_i,
+  input  logic        jtag_tms_i,
+  input  logic        jtag_tdi_i,
+  output logic        jtag_tdo_o,
   // `i2c` Interface
-  output logic             i2c_sda_o,
-  input  logic             i2c_sda_i,
-  output logic             i2c_sda_en_o,
-  output logic             i2c_scl_o,
-  input  logic             i2c_scl_i,
-  output logic             i2c_scl_en_o,
+  output logic        i2c_sda_o,
+  input  logic        i2c_sda_i,
+  output logic        i2c_sda_en_o,
+  output logic        i2c_scl_o,
+  input  logic        i2c_scl_i,
+  output logic        i2c_scl_en_o,
   // `SPI Host` Interface
-  output logic             spim_sck_o,
-  output logic             spim_sck_en_o,
-  output logic [ 1:0]      spim_csb_o,
-  output logic [ 1:0]      spim_csb_en_o,
-  output logic [ 3:0]      spim_sd_o,
-  output logic [ 3:0]      spim_sd_en_o,
-  input        [ 3:0]      spim_sd_i,
+  output logic        spim_sck_o,
+  output logic        spim_sck_en_o,
+  output logic [1:0]  spim_csb_o,
+  output logic [1:0]  spim_csb_en_o,
+  output logic [3:0]  spim_sd_o,
+  output logic [3:0]  spim_sd_en_o,
+  input        [3:0]  spim_sd_i,
+
+  // Boot ROM
+  output logic                                             bootrom_en_o,
+  // This is actually too wide. But the address width depends on the ROM size, so let Vivado handle
+  // this for now
+  output ${soc_regbus_periph_xbar.out_bootrom.addr_type()} bootrom_addr_o,
+  input  ${soc_regbus_periph_xbar.out_bootrom.data_type()} bootrom_data_i,
 
   /// HBM2e Ports
 % for i in range(8):
@@ -88,8 +100,27 @@ import occamy_pkg::*;
 % endfor
 
   /// Boot ROM
+  // TODO(niwis, aottaviano) This is a temporary solution. Either put this in a dedicated module for
+  // regbus <-> Xilinx memory conversion and add support to solder, or replace by a different ROM
   ${soc_regbus_periph_xbar.out_bootrom.req_type()} bootrom_req;
   ${soc_regbus_periph_xbar.out_bootrom.rsp_type()} bootrom_rsp;
+
+  logic bootrom_req_ready_d, bootrom_req_ready_q;
+
+  assign bootrom_en_o        = bootrom_req.valid;
+  assign bootrom_addr_o      = bootrom_req.addr >> 2; // 32-bit addressed
+  assign bootrom_rsp.ready   = bootrom_req_ready_q;
+  assign bootrom_rsp.rdata   = bootrom_data_i;
+  assign bootrom_rsp.error   = '0;
+  assign bootrom_req_ready_d = bootrom_req.valid & ~bootrom_req_ready_q;
+
+  always_ff @(posedge clk_i or negedge rst_ni) begin
+    if (!rst_ni) begin
+      bootrom_req_ready_q <= 1'b0;
+    end else begin
+      bootrom_req_ready_q <= bootrom_req_ready_d;
+    end
+  end
 
   /// Clk manager
   ${soc_regbus_periph_xbar.out_clk_mgr.req_type()} clk_mgr_req;
@@ -104,7 +135,6 @@ import occamy_pkg::*;
     .*
   );
 
-  assign bootrom_rsp = '0;
   assign clk_mgr_rsp = '0;
 
 endmodule

@@ -9,12 +9,14 @@ import hjson
 import pathlib
 import sys
 import re
+import logging
+from subprocess import run
 
 from jsonref import JsonRef
 from clustergen.occamy import Occamy
 from mako.lookup import TemplateLookup
 
-from solder import solder
+from solder import solder, device_tree
 
 templates = TemplateLookup(
     directories=[pathlib.Path(__file__).parent / "../hw/system/occamy"],
@@ -24,7 +26,7 @@ templates = TemplateLookup(
 def main():
     """Generate the Occamy system and all corresponding configuration files."""
     parser = argparse.ArgumentParser(prog="clustergen")
-    parser.add_argument("--clustercfg",
+    parser.add_argument("--cfg",
                         "-c",
                         metavar="file",
                         type=argparse.FileType('r'),
@@ -50,10 +52,20 @@ def main():
                         help="Name of the CVA6 wrapper file (output).")
     parser.add_argument("--graph", "-g", metavar="DOT")
     parser.add_argument("--cheader", "-D", metavar="CHEADER")
+    parser.add_argument("--dts", metavar="DTS", help="System's device tree.")
+
+    parser.add_argument("-v",
+                        "--verbose",
+                        help="increase output verbosity",
+                        action="store_true")
 
     args = parser.parse_args()
+
+    if args.verbose:
+        logging.basicConfig(level=logging.DEBUG)
+
     # Read HJSON description of System.
-    with args.clustercfg as file:
+    with args.cfg as file:
         try:
             srcfull = file.read()
             obj = hjson.loads(srcfull, use_decimal=True)
@@ -84,6 +96,8 @@ def main():
 
     # Create the address map.
     am = solder.AddrMap()
+    # Create a device tree object.
+    dts = device_tree.DeviceTree()
 
     am_soc_narrow_xbar = am.new_node("soc_narrow_xbar")
     am_soc_wide_xbar = am.new_node("soc_wide_xbar")
@@ -93,9 +107,13 @@ def main():
 
     am_debug = am.new_leaf("debug", 0x1000,
                            0x00000000).attach_to(am_soc_axi_lite_periph_xbar)
+    dts.add_device("debug", "riscv,debug-013", am_debug, [
+        "interrupts-extended = <&CPU0_intc 65535>", "reg-names = \"control\""
+    ])
 
-    am_bootrom = am.new_leaf("bootrom", occamy.cfg["rom"]["length"],
-                             occamy.cfg["rom"]["address"]).attach_to(am_soc_regbus_periph_xbar)
+    am_bootrom = am.new_leaf(
+        "bootrom", occamy.cfg["rom"]["length"],
+        occamy.cfg["rom"]["address"]).attach_to(am_soc_regbus_periph_xbar)
 
     am_soc_ctrl = am.new_leaf("soc_ctrl", 0x1000,
                               0x02000000).attach_to(am_soc_regbus_periph_xbar)
@@ -104,6 +122,11 @@ def main():
 
     am_uart = am.new_leaf("uart", 0x1000,
                           0x02002000).attach_to(am_soc_regbus_periph_xbar)
+    dts.add_device("serial", "lowrisc,serial", am_uart, [
+        "clock-frequency = <50000000>", "current-speed = <115200>",
+        "interrupt-parent = <&PLIC0>", "interrupts = <1>"
+    ])
+
     am_gpio = am.new_leaf("gpio", 0x1000,
                           0x02003000).attach_to(am_soc_regbus_periph_xbar)
     am_i2c = am.new_leaf("i2c", 0x1000,
@@ -114,9 +137,12 @@ def main():
 
     am_clint = am.new_leaf("clint", 0x0100000,
                            0x04000000).attach_to(am_soc_axi_lite_periph_xbar)
+    dts.add_clint([0], am_clint)
 
     am_plic = am.new_leaf("plic", 0x4000000,
                           0x0C000000).attach_to(am_soc_regbus_periph_xbar)
+
+    dts.add_plic([0], am_plic)
 
     am_pcie = am.new_leaf("pcie", 0x30000000, 0x20000000,
                           0x50000000).attach_to(am_soc_wide_xbar)
@@ -124,15 +150,18 @@ def main():
     # HBM
     am_hbm = list()
     HBM_CHANNEL_SIZE = 0x40000000  # 1 GB channel size
+    HBM_BASE = 0x80000000
 
     for i in range(8):
         bases = list()
-        bases.append(0x1000000000 + i * HBM_CHANNEL_SIZE)
         if i < 2:
-            bases.append(0x80000000 + i * HBM_CHANNEL_SIZE)
+            bases.append(HBM_BASE + i * HBM_CHANNEL_SIZE)
+        bases.append(0x1000000000 + i * HBM_CHANNEL_SIZE)
         am_hbm.append(
             am.new_leaf("hbm_{}".format(i), HBM_CHANNEL_SIZE,
                         *bases).attach_to(am_soc_wide_xbar))
+
+    dts.add_memory(am_hbm[0])
 
     am_soc_narrow_xbar.attach(am_soc_axi_lite_periph_xbar)
     am_soc_narrow_xbar.attach(am_soc_regbus_periph_xbar)
@@ -227,6 +256,7 @@ def main():
         soc_narrow_xbar.add_input("s1_quadrant_{}".format(i))
 
     soc_narrow_xbar.add_input("cva6")
+    dts.add_cpu("eth,ariane")
 
     soc_narrow_xbar.add_output_entry("periph", am_soc_axi_lite_periph_xbar)
     soc_narrow_xbar.add_output_entry("soc_wide", am_soc_wide_xbar)
@@ -266,6 +296,7 @@ def main():
         wide_xbar_quadrant_s1.add_output_symbolic("cluster_{}".format(i),
                                                   "cluster_base_addr",
                                                   "ClusterAddressSpace")
+
         wide_xbar_quadrant_s1.add_input("cluster_{}".format(i))
         narrow_xbar_quadrant_s1.add_output_symbolic("cluster_{}".format(i),
                                                     "cluster_base_addr",
@@ -357,16 +388,47 @@ def main():
     tpl_cva6 = templates.get_template("src/occamy_cva6.sv.tpl")
 
     with open(args.CVA6_SV, "w") as file:
-        code = tpl_cva6.render_unicode(
-            solder=solder,
-            soc_narrow_xbar=soc_narrow_xbar,
-            cfg=occamy.cfg)
+        code = tpl_cva6.render_unicode(solder=solder,
+                                       soc_narrow_xbar=soc_narrow_xbar,
+                                       cfg=occamy.cfg)
         code = re_trailws.sub("", code)
         file.write(code)
 
+    ###########
+    # CHEADER #
+    ###########
     if args.cheader:
         with open(args.cheader, "w") as file:
             file.write(am.print_cheader())
+
+    #######
+    # DTS #
+    #######
+    # TODO(niwis, zarubaf): We probably need to think about genrating a couple
+    # of different systems here. I can at least think about two in that context:
+    # 1. RTL sim
+    # 2. FPGA
+    # 3. (ASIC) in the private wrapper repo
+    # I think we have all the necessary ingredients for this. What is missing is:
+    # - Create a second(/third) configuration file.
+    # - Generate the RTL into dedicated directories
+    # - (Manually) adapt the `Bender.yml` to include the appropriate files.
+    htif = dts.add_node("htif", "ucb,htif0")
+    dts.add_chosen("stdout-path = \"{}\";".format(htif))
+
+    if args.dts:
+        # TODO(zarubaf): Figure out whether there are any requirements on the
+        # model and compatability.
+        dts_str = dts.emit("eth,occamy-dev", "eth,occamy")
+        with open(args.dts, "w") as file:
+            file.write(dts_str)
+        # Compile to DTB and save to a file with `.dtb` extension.
+        with open(pathlib.Path(args.dts).with_suffix(".dtb"), "wb") as file:
+            run(["dtc", args.dts],
+                input=dts_str,
+                stdout=file,
+                shell=True,
+                text=True)
 
     # Emit the address map as a dot file if requested.
     if args.graph:

@@ -7,6 +7,8 @@
 
 import math
 import pathlib
+import logging
+
 from copy import copy
 from mako.lookup import TemplateLookup
 from . import util
@@ -167,9 +169,9 @@ class AddrMapNode(AddrMapEntry):
 
         # Sort the routes by lower address to allow for easier processing later.
         routes.sort(key=lambda a: a.lo)
-        print("Routes for `{}`:".format(self.name))
+        logging.info("Routes for `{}`:".format(self.name))
         for route in routes:
-            print("  - {}".format(route))
+            logging.info("  - {}".format(route))
 
         # Simplify the address map by replacing redundant paths to the same
         # desintation with the port that takes the least number of hops. Also
@@ -182,7 +184,7 @@ class AddrMapNode(AddrMapEntry):
             # Check if the routse have an identical address mapping and target,
             # in which case we pick the shortest route.
             if last.lo == route.lo and last.hi == route.hi and last.target == route.target:
-                print("Collapsing redundant routes to `{}`".format(
+                logging.info("Collapsing redundant routes to `{}`".format(
                     route.target.name))
                 if last.depth > route.depth:
                     done[-1] = route
@@ -199,9 +201,9 @@ class AddrMapNode(AddrMapEntry):
             # Just keep this rule.
             done.append(route)
 
-        print("Simplified routes for `{}`:".format(self.name))
+        logging.info("Simplified routes for `{}`:".format(self.name))
         for route in done:
-            print("  - {}".format(route))
+            logging.info("  - {}".format(route))
 
         # Compress the routes by collapsing adjacent address ranges that map to
         # the same port.
@@ -222,9 +224,9 @@ class AddrMapNode(AddrMapEntry):
             # Just keep this rule.
             compressed.append(route)
 
-        print("Compressed routes for `{}`:".format(self.name))
+        logging.info("Compressed routes for `{}`:".format(self.name))
         for route in compressed:
-            print("  - {}".format(route))
+            logging.info("  - {}".format(route))
 
         self.routes = compressed
         return compressed
@@ -884,6 +886,15 @@ class RegBus(object):
 
     def rsp_type(self):
         return "{}_rsp_t".format(self.type_prefix)
+
+    def addr_type(self):
+        return "logic [{}:0]".format(self.aw - 1)
+
+    def data_type(self):
+        return "logic [{}:0]".format(self.dw - 1)
+
+    def strb_type(self):
+        return "logic [{}:0]".format((self.dw + 7) // 8 - 1)
 
     def to_axi_lite(self, context, name, inst_name=None, to=None):
         # Generate the new bus.
