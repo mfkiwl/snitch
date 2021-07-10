@@ -454,6 +454,26 @@ pub unsafe fn add_llvm_symbols() {
 // #[repr(C)]
 // pub struct System<'a> {}
 
+impl CpuState {
+    /// Create a new CpuState
+    pub fn new(num_dm: usize) -> Self {
+        Self {
+            regs: [0; 32],
+            regs_cycle: [0; 32],
+            fregs: [0; 32],
+            fregs_cycle: [0; 32],
+            cas_value: 0,
+            pc: 0,
+            cycle: 0,
+            instret: 0,
+            ssrs: (0..num_dm).map(|_| Default::default()).collect(),
+            ssr_enable: 0,
+            wfi: false,
+            dma: Default::default(),
+        }
+    }
+}
+
 impl<'a, 'b> Cpu<'a, 'b> {
     /// Create a new CPU in a default state.
     pub fn new(
@@ -469,7 +489,7 @@ impl<'a, 'b> Cpu<'a, 'b> {
     ) -> Self {
         Self {
             engine,
-            state: Default::default(),
+            state: CpuState::new(engine.config.ssr.num_dm),
             tcdm_ptr,
             hartid,
             num_cores,
@@ -602,7 +622,7 @@ impl<'a, 'b> Cpu<'a, 'b> {
     fn binary_rmw(&self, addr: u32, value: u32, op: AtomicOp) -> u32 {
         trace!("RMW 0x{:x} (op={})= 0x{:x} (32B)", addr, op as u8, value);
         let mut data = self.engine.memory.lock().unwrap();
-        let prev = data.get(&(addr as u64)).copied().unwrap_or(0);
+        let mut prev = data.get(&(addr as u64)).copied().unwrap_or(0);
         // Atomics
         let result = match op {
             AtomicOp::Amoadd => prev + value,
@@ -614,6 +634,14 @@ impl<'a, 'b> Cpu<'a, 'b> {
             AtomicOp::Amominu => std::cmp::min(prev as u32, value as u32),
             AtomicOp::Amomaxu => std::cmp::max(prev as u32, value as u32),
             AtomicOp::Amoswap => value,
+            AtomicOp::ScW => {
+                if prev == self.state.cas_value {
+                    prev = 0; // Store-conditional success
+                    value
+                } else {
+                    return 1 as u32; // Store-conditional failed
+                }
+            }
         };
         data.insert(addr as u64, result);
         prev as u32
@@ -762,4 +790,5 @@ pub enum AtomicOp {
     Amominu,
     Amomaxu,
     Amoswap,
+    ScW,
 }

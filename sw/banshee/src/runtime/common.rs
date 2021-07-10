@@ -31,24 +31,24 @@ pub struct Cpu<'a, 'b> {
 }
 
 /// A representation of a single CPU core's state.
-#[derive(Default)]
 #[repr(C)]
 pub struct CpuState {
     pub regs: [u32; 32],
     pub regs_cycle: [u64; 32],
     pub fregs: [u64; 32],
     pub fregs_cycle: [u64; 32],
+    pub cas_value: u32,
     pub pc: u32,
     pub cycle: u64,
     pub instret: u64,
-    pub ssrs: [SsrState; 2],
+    pub ssrs: Vec<SsrState>,
     pub ssr_enable: u32,
     pub dma: DmaState,
     pub wfi: bool,
 }
 
 /// A representation of a single SSR address generator's state.
-#[derive(Default)]
+#[derive(Default, Clone)]
 #[repr(C)]
 pub struct SsrState {
     index: [u32; 4],

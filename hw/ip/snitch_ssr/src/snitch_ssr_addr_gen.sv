@@ -15,7 +15,6 @@ module snitch_ssr_addr_gen import snitch_ssr_pkg::*; #(
   parameter type tcdm_rsp_t   = logic,
   parameter type tcdm_user_t  = logic,
   /// Derived parameters *Do not override*
-  parameter int unsigned DimWidth     = $clog2(Cfg.NumLoops),
   parameter int unsigned BytecntWidth = $clog2(DataWidth/8),
   parameter type addr_t     = logic [AddrWidth-1:0],
   parameter type data_t     = logic [DataWidth-1:0],
@@ -51,7 +50,7 @@ module snitch_ssr_addr_gen import snitch_ssr_pkg::*; #(
 
   pointer_t [Cfg.NumLoops-1:0] stride_q, stride_sd, stride_sq;
   pointer_t pointer_q, pointer_qn, pointer_sd, pointer_sq, pointer_sqn, selected_stride;
-  index_t [Cfg.NumLoops-1:0] index_q, bound_q, bound_sd, bound_sq;
+  index_t [Cfg.NumLoops-1:0] index_q, index_d, bound_q, bound_sd, bound_sq;
   logic [Cfg.RptWidth-1:0] rep_q, rep_sd, rep_sq;
   logic [Cfg.NumLoops-1:0] loop_enabled;
   logic [Cfg.NumLoops-1:0] loop_last;
@@ -61,8 +60,8 @@ module snitch_ssr_addr_gen import snitch_ssr_pkg::*; #(
     logic idx_shift;
     logic idx_base;
     logic idx_size;
-    logic [Cfg.NumLoops-1:0] stride;
-    logic [Cfg.NumLoops-1:0] bound;
+    logic [3:0] stride;
+    logic [3:0] bound;
     logic rep;
     logic status;
   } write_strobe_t;
@@ -73,7 +72,7 @@ module snitch_ssr_addr_gen import snitch_ssr_pkg::*; #(
   typedef struct packed {
     logic done;
     logic write;
-    logic [DimWidth-1:0] dims;
+    logic [1:0] dims;
     logic indir;
   } config_t;
   config_t config_q, config_qn, config_sd, config_sq, config_sqn;
@@ -81,7 +80,7 @@ module snitch_ssr_addr_gen import snitch_ssr_pkg::*; #(
   typedef struct packed {
     logic no_indir;       // Inverted as aliases aligned at upper address edge
     logic write;
-    logic [DimWidth-1:0] dims;
+    logic [1:0] dims;
   } alias_fields_t;
 
   alias_fields_t alias_fields;
@@ -159,7 +158,9 @@ module snitch_ssr_addr_gen import snitch_ssr_pkg::*; #(
     assign loop_last[0]       = (natit_extraword ? natit_base_last_q : natit_base_last_d);
 
     // Track last index word to set downstream last signal and handle word misalignment at end.
-    `FFLARNC(natit_last_word_inflight_q, 1'b1, enable & done, config_q.done, 1'b0, clk_i, rst_ni)
+    logic config_load;
+    assign config_load = enable & done;
+    `FFLARNC(natit_last_word_inflight_q, 1'b1, config_load, config_q.done, 1'b0, clk_i, rst_ni)
 
     // Natural iteration loop 0 is done when last word inflight or address gen done.
     assign natit_done = natit_last_word_inflight_q | config_q.done;
@@ -180,8 +181,8 @@ module snitch_ssr_addr_gen import snitch_ssr_pkg::*; #(
       .rst_ni,
       .idx_req_o,
       .idx_rsp_i,
-      .cfg_launch_i        ( write_strobe.status | alias_strobe ),
-      .cfg_wdata_lo_i      ( cfg_wdata_i[BytecntWidth-1:0]      ),
+      .cfg_done_i          ( config_q.done    ),
+      .cfg_offs_next_i     ( pointer_sd[BytecntWidth-1:0] ),
       .cfg_indir_i         ( config_q.indir   ),
       .cfg_size_i          ( idx_size_q       ),
       .cfg_base_i          ( idx_base_q       ),
@@ -263,6 +264,7 @@ module snitch_ssr_addr_gen import snitch_ssr_pkg::*; #(
   // Generate the loop counters.
   for (genvar i = 0; i < Cfg.NumLoops; i++) begin : gen_loop_counter
     logic index_ena;
+    logic index_clear;
 
     always_comb begin
       stride_sd[i] = stride_sq[i];
@@ -279,7 +281,10 @@ module snitch_ssr_addr_gen import snitch_ssr_pkg::*; #(
     `FFLARN(bound_q[i], bound_sd[i], config_q.done, '0, clk_i, rst_ni)
 
     assign index_ena = enable & loop_enabled[i];
-    `FFLARNC(index_q[i], index_q[i] + 1, index_ena, index_ena & loop_last[i], '0, clk_i, rst_ni)
+
+    assign index_d[i] = index_q[i] + 1;
+    assign index_clear = index_ena & loop_last[i];
+    `FFLARNC(index_q[i], index_d[i], index_ena, index_clear, '0, clk_i, rst_ni)
 
     // Indicate last iteration (loops > 0); base loop handled differently in indirection
     if (i > 0) begin : gen_loop_last_upper
@@ -360,8 +365,8 @@ module snitch_ssr_addr_gen import snitch_ssr_pkg::*; #(
 
   typedef struct packed {
     indir_read_map_t indir_read_map;
-    logic [Cfg.NumLoops-1:0][31:0] stride;
-    logic [Cfg.NumLoops-1:0][31:0] bound;
+    logic [3:0][31:0] stride;
+    logic [3:0][31:0] bound;
     logic [31:0] rep;
     logic [31:0] status;
   } read_map_t;
@@ -374,6 +379,8 @@ module snitch_ssr_addr_gen import snitch_ssr_pkg::*; #(
     read_map.status = pointer_q;
     read_map.status[31-:$bits(config_q)] = config_q;
     read_map.rep = rep_q;
+    read_map.bound = '0;
+    read_map.stride = '0;
     for (int i = 0; i < Cfg.NumLoops; i++) begin
       read_map.bound[i] = bound_q[i];
       read_map.stride[i] = stride_q[i];

@@ -45,6 +45,13 @@ pub unsafe fn banshee_freg_cycle_ptr<'a>(cpu: &'a mut Cpu, reg: u32) -> &'a mut 
     cpu.state.fregs_cycle.get_unchecked_mut(reg as usize)
 }
 
+/// Get a pointer to the CAS comparison value register.
+#[no_mangle]
+#[inline(always)]
+pub unsafe fn banshee_cas_value_ptr<'a>(cpu: &'a mut Cpu) -> &'a mut u32 {
+    &mut cpu.state.cas_value
+}
+
 /// Get a pointer to the program counter register.
 #[no_mangle]
 #[inline(always)]
@@ -117,7 +124,7 @@ pub unsafe fn banshee_ssr_write_cfg(
             ssr.dims = ((value >> 28) & 3) as u8;
             ssr.indir = ((value >> 27) & 1) != 0;
         }
-        1 => ssr.repeat_count = value as u16,
+        1 => ssr.repeat_bound = value as u16,
         2..=5 => *ssr.bound.get_unchecked_mut(addr - 2) = value,
         6..=9 => *ssr.stride.get_unchecked_mut(addr - 6) = value,
         10 => ssr.idx_size = value,
@@ -170,7 +177,7 @@ pub unsafe fn banshee_ssr_read_cfg(ssr: &mut SsrState, addr: u32) -> u32 {
                 | (ssr.dims as u32) << 28
                 | (ssr.indir as u32) << 27
         }
-        1 => ssr.repeat_count as u32,
+        1 => ssr.repeat_bound as u32,
         2..=5 => *ssr.bound.get_unchecked(addr - 2),
         6..=9 => *ssr.stride.get_unchecked(addr - 6),
         10 => ssr.idx_size,
